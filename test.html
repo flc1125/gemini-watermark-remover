@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>算法测试 - Gemini 去水印工具</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-result {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Gemini 去水印工具 - 算法测试</h1>
+
+    <div class="test-section">
+        <h2>测试 1: Alpha Map 计算</h2>
+        <div id="test1-result"></div>
+        <canvas id="test1-canvas" width="48" height="48"></canvas>
+    </div>
+
+    <div class="test-section">
+        <h2>测试 2: 水印检测</h2>
+        <div id="test2-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>测试 3: 反向 Alpha 混合</h2>
+        <div id="test3-result"></div>
+        <canvas id="test3-before" width="100" height="100"></canvas>
+        <canvas id="test3-after" width="100" height="100"></canvas>
+    </div>
+
+    <script type="module">
+        import { calculateAlphaMap } from './js/core/alphaMap.js';
+        import { removeWatermark } from './js/core/blendModes.js';
+        import { detectWatermarkConfig, calculateWatermarkPosition } from './js/core/watermarkEngine.js';
+
+        // 测试 1: Alpha Map 计算
+        function test1() {
+            const canvas = document.getElementById('test1-canvas');
+            const ctx = canvas.getContext('2d');
+
+            // 创建一个渐变测试图像
+            const gradient = ctx.createLinearGradient(0, 0, 48, 48);
+            gradient.addColorStop(0, 'black');
+            gradient.addColorStop(1, 'white');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 48, 48);
+
+            // 获取 ImageData
+            const imageData = ctx.getImageData(0, 0, 48, 48);
+
+            // 计算 alpha map
+            const alphaMap = calculateAlphaMap(imageData);
+
+            // 验证结果
+            const result = document.getElementById('test1-result');
+            if (alphaMap instanceof Float32Array && alphaMap.length === 48 * 48) {
+                result.className = 'test-result success';
+                result.innerHTML = `
+                    ✓ Alpha map 计算成功<br>
+                    - 类型: Float32Array<br>
+                    - 长度: ${alphaMap.length}<br>
+                    - 最小值: ${Math.min(...alphaMap).toFixed(3)}<br>
+                    - 最大值: ${Math.max(...alphaMap).toFixed(3)}
+                `;
+            } else {
+                result.className = 'test-result error';
+                result.textContent = '✗ Alpha map 计算失败';
+            }
+        }
+
+        // 测试 2: 水印检测
+        function test2() {
+            const result = document.getElementById('test2-result');
+            let html = '';
+
+            // 测试不同尺寸
+            const testCases = [
+                { width: 512, height: 512, expected: 48 },
+                { width: 1024, height: 1024, expected: 48 },
+                { width: 2048, height: 2048, expected: 96 },
+                { width: 1920, height: 1080, expected: 48 },
+                { width: 3840, height: 2160, expected: 96 }
+            ];
+
+            let allPassed = true;
+            testCases.forEach(test => {
+                const config = detectWatermarkConfig(test.width, test.height);
+                const position = calculateWatermarkPosition(test.width, test.height, config);
+                const passed = config.logoSize === test.expected;
+                allPassed = allPassed && passed;
+
+                html += `
+                    <div style="margin: 5px 0;">
+                        ${passed ? '✓' : '✗'} ${test.width}×${test.height}:
+                        检测到 ${config.logoSize}×${config.logoSize}
+                        (期望 ${test.expected}×${test.expected})
+                        位置: (${position.x}, ${position.y})
+                    </div>
+                `;
+            });
+
+            result.className = `test-result ${allPassed ? 'success' : 'error'}`;
+            result.innerHTML = html;
+        }
+
+        // 测试 3: 反向 Alpha 混合
+        function test3() {
+            const canvasBefore = document.getElementById('test3-before');
+            const canvasAfter = document.getElementById('test3-after');
+            const ctxBefore = canvasBefore.getContext('2d');
+            const ctxAfter = canvasAfter.getContext('2d');
+
+            // 创建一个简单的测试图像（红色背景）
+            ctxBefore.fillStyle = 'red';
+            ctxBefore.fillRect(0, 0, 100, 100);
+
+            // 模拟添加白色水印（alpha = 0.5）
+            ctxBefore.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctxBefore.fillRect(25, 25, 50, 50);
+
+            // 获取带水印的图像数据
+            const imageData = ctxBefore.getImageData(0, 0, 100, 100);
+
+            // 创建一个简单的 alpha map（中心区域 alpha = 0.5）
+            const alphaMap = new Float32Array(50 * 50);
+            alphaMap.fill(0.5);
+
+            // 应用反向 alpha 混合
+            const position = { x: 25, y: 25, width: 50, height: 50 };
+            removeWatermark(imageData, alphaMap, position);
+
+            // 显示处理后的图像
+            ctxAfter.putImageData(imageData, 0, 0);
+
+            // 验证结果（检查中心像素是否接近红色）
+            const centerPixel = imageData.data[(50 * 100 + 50) * 4];
+            const result = document.getElementById('test3-result');
+
+            if (centerPixel > 200) { // 应该接近 255 (红色)
+                result.className = 'test-result success';
+                result.innerHTML = `
+                    ✓ 反向 alpha 混合成功<br>
+                    - 处理前: 带白色半透明水印<br>
+                    - 处理后: 恢复为红色背景<br>
+                    - 中心像素红色值: ${centerPixel} (期望 > 200)
+                `;
+            } else {
+                result.className = 'test-result error';
+                result.innerHTML = `
+                    ✗ 反向 alpha 混合失败<br>
+                    - 中心像素红色值: ${centerPixel} (期望 > 200)
+                `;
+            }
+        }
+
+        // 运行所有测试
+        try {
+            test1();
+            test2();
+            test3();
+        } catch (error) {
+            console.error('测试失败:', error);
+            alert('测试失败: ' + error.message);
+        }
+    </script>
+</body>
+</html>
