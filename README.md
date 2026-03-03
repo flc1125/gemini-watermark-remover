@@ -1,6 +1,6 @@
 [中文文档](README_zh.md)
 
-# Gemini Lossless Watermark Remover - [banana.ovo.re](https://banana.ovo.re)
+# Gemini Lossless Watermark Remover - [gemini.pilio.ai](https://gemini.pilio.ai)
 
 A high-performance, 100% client-side tool for removing Gemini AI watermarks. Built with pure JavaScript, it leverages a mathematically precise **Reverse Alpha Blending** algorithm rather than unpredictable AI inpainting.
 
@@ -57,7 +57,7 @@ A high-performance, 100% client-side tool for removing Gemini AI watermarks. Bui
 
 ### Online Website
 
-1. Open [banana.ovo.re](https://banana.ovo.re).
+1. Open [gemini.pilio.ai](https://gemini.pilio.ai).
 2. Drag and drop or click to select your Gemini-generated image.
 3. The engine will automatically process and remove the watermark.
 4. Download the cleaned image.
@@ -65,7 +65,7 @@ A high-performance, 100% client-side tool for removing Gemini AI watermarks. Bui
 ### Userscript for Gemini Conversation Pages
 
 1. Install a userscript manager (e.g., Tampermonkey or Greasemonkey).
-2. Open [gemini-watermark-remover.user.js](https://banana.ovo.re/userscript/gemini-watermark-remover.user.js).
+2. Open [gemini-watermark-remover.user.js](https://gemini.pilio.ai/userscript/gemini-watermark-remover.user.js).
 3. The script will install automatically.
 4. Navigate to Gemini conversation pages.
 5. Click "Copy Image" or "Download Image" to remove the watermark.

@@ -17,3 +17,6 @@ yarn-error.log*
 .env*.local
 .env
 src/assets/samples/
+.artifacts
+.npm-cache-local
+.npm-tmp-cache

@@ -1,4 +1,5 @@
 import { WatermarkEngine } from './core/watermarkEngine.js';
+import { resolveDisplayWatermarkInfo } from './core/watermarkDisplay.js';
 import i18n from './i18n.js';
 import { loadImage, checkOriginal, getOriginalStatus, setStatusMessage, showLoading, hideLoading } from './utils.js';
 import JSZip from 'jszip';
@@ -148,6 +149,7 @@ function handleFiles(files) {
         status: 'pending',
         validation: null,
         originalImg: null,
+        processedMeta: null,
         processedBlob: null,
         originalUrl: null,
         processedUrl: null
@@ -173,7 +175,12 @@ function handleFiles(files) {
 function renderSingleImageMeta(item) {
     if (!item?.originalImg || !engine) return;
 
-    const watermarkInfo = engine.getWatermarkInfo(item.originalImg.width, item.originalImg.height);
+    const watermarkInfo = resolveDisplayWatermarkInfo(
+        item,
+        engine.getWatermarkInfo(item.originalImg.width, item.originalImg.height)
+    );
+    if (!watermarkInfo) return;
+
     originalInfo.innerHTML = `
         <p>${i18n.t('info.size')}: ${item.originalImg.width}×${item.originalImg.height}</p>
         <p>${i18n.t('info.watermark')}: ${watermarkInfo.size}×${watermarkInfo.size}</p>
@@ -182,10 +189,17 @@ function renderSingleImageMeta(item) {
 }
 
 function renderSingleProcessedMeta(item) {
-    if (!item?.originalImg) return;
+    if (!item?.originalImg || !engine) return;
+
+    const watermarkInfo = resolveDisplayWatermarkInfo(
+        item,
+        engine.getWatermarkInfo(item.originalImg.width, item.originalImg.height)
+    );
 
     processedInfo.innerHTML = `
         <p>${i18n.t('info.size')}: ${item.originalImg.width}×${item.originalImg.height}</p>
+        ${watermarkInfo ? `<p>${i18n.t('info.watermark')}: ${watermarkInfo.size}×${watermarkInfo.size}</p>` : ''}
+        ${watermarkInfo ? `<p>${i18n.t('info.position')}: (${watermarkInfo.position.x},${watermarkInfo.position.y})</p>` : ''}
         <p>${i18n.t('info.status')}: ${i18n.t('info.removed')}</p>
     `;
 }
@@ -210,7 +224,12 @@ function renderImageCardStatus(item) {
 
     if (item.status !== 'completed' || !item.originalImg || !engine) return;
 
-    const watermarkInfo = engine.getWatermarkInfo(item.originalImg.width, item.originalImg.height);
+    const watermarkInfo = resolveDisplayWatermarkInfo(
+        item,
+        engine.getWatermarkInfo(item.originalImg.width, item.originalImg.height)
+    );
+    if (!watermarkInfo) return;
+
     let html = `<p>${i18n.t('info.size')}: ${item.originalImg.width}×${item.originalImg.height}</p>
         <p>${i18n.t('info.watermark')}: ${watermarkInfo.size}×${watermarkInfo.size}</p>
         <p>${i18n.t('info.position')}: (${watermarkInfo.position.x},${watermarkInfo.position.y})</p>`;
@@ -236,6 +255,8 @@ async function processSingle(item) {
         renderSingleImageMeta(item);
 
         const result = await engine.removeWatermarkFromImage(img);
+        item.processedMeta = result.__watermarkMeta || null;
+        renderSingleImageMeta(item);
         const blob = await new Promise(resolve => result.toBlob(resolve, 'image/png'));
         item.processedBlob = blob;
 
@@ -309,6 +330,7 @@ async function processQueue() {
 
             try {
                 const result = await engine.removeWatermarkFromImage(item.originalImg);
+                item.processedMeta = result.__watermarkMeta || null;
                 const blob = await new Promise(resolve => result.toBlob(resolve, 'image/png'));
                 item.processedBlob = blob;
 

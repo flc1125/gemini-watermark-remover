@@ -165,13 +165,13 @@
                 </div>
 
                 <div class="relative w-full overflow-hidden bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgZmlsbD0iI2Y5ZmRmZCI+PHJlY3Qgd2lkdGg9IjEwIiBoZWlnaHQ9IjEwIiBmaWxsPSIjZjJmMmYyIi8+PHJlY3QgeD0iMTAiIHk9IjEwIiB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIGZpbGw9IiNmMmYyZjIiLz48L3N2Zz4=')] select-none group">
-                    <div id="comparisonContainer" class="relative mx-auto" style="max-height: 80vh;">
+                    <div id="comparisonContainer" class="relative mx-auto w-fit max-w-full" style="max-height: 60vh;">
                          <!-- Original Image (Background) -->
-                        <img id="originalImage" class="block w-full h-auto max-h-[80vh] object-contain" draggable="false" />
+                        <img id="originalImage" class="block w-auto h-auto max-w-full max-h-[60vh] object-contain object-right-bottom" draggable="false" />
 
                          <!-- Processed Image (Overlay) -->
                         <div id="processedOverlay" class="absolute top-0 left-0 h-full w-[50%] overflow-hidden border-r-2 border-white/80 shadow-[0_0_10px_rgba(0,0,0,0.3)] box-content z-10" style="display: none;">
-                             <img id="processedImage" class="block h-full max-w-none object-contain" draggable="false" />
+                             <img id="processedImage" class="block h-full max-w-none object-contain object-right-bottom" draggable="false" />
                         </div>
 
                         <!-- Slider Handle -->

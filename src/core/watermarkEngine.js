@@ -10,51 +10,14 @@ import {
     interpolateAlphaMap,
     shouldAttemptAdaptiveFallback
 } from './adaptiveDetector.js';
+import {
+    detectWatermarkConfig,
+    calculateWatermarkPosition,
+    resolveInitialStandardConfig
+} from './watermarkConfig.js';
 import BG_48_PATH from '../assets/bg_48.png';
 import BG_96_PATH from '../assets/bg_96.png';
-
-/**
- * Detect watermark configuration based on image size
- * @param {number} imageWidth - Image width
- * @param {number} imageHeight - Image height
- * @returns {Object} Watermark configuration {logoSize, marginRight, marginBottom}
- */
-export function detectWatermarkConfig(imageWidth, imageHeight) {
-    // Gemini's watermark rules:
-    // If both image width and height are greater than 1024, use 96×96 watermark
-    // Otherwise, use 48×48 watermark
-    if (imageWidth > 1024 && imageHeight > 1024) {
-        return {
-            logoSize: 96,
-            marginRight: 64,
-            marginBottom: 64
-        };
-    } else {
-        return {
-            logoSize: 48,
-            marginRight: 32,
-            marginBottom: 32
-        };
-    }
-}
-
-/**
- * Calculate watermark position in image based on image size and watermark configuration
- * @param {number} imageWidth - Image width
- * @param {number} imageHeight - Image height
- * @param {Object} config - Watermark configuration {logoSize, marginRight, marginBottom}
- * @returns {Object} Watermark position {x, y, width, height}
- */
-export function calculateWatermarkPosition(imageWidth, imageHeight, config) {
-    const { logoSize, marginRight, marginBottom } = config;
-
-    return {
-        x: imageWidth - marginRight - logoSize,
-        y: imageHeight - marginBottom - logoSize,
-        width: logoSize,
-        height: logoSize
-    };
-}
+export { detectWatermarkConfig, calculateWatermarkPosition } from './watermarkConfig.js';
 
 /**
  * Watermark engine class
@@ -148,9 +111,20 @@ export class WatermarkEngine {
         const originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
         // Detect watermark configuration
-        const config = detectWatermarkConfig(canvas.width, canvas.height);
+        const defaultConfig = detectWatermarkConfig(canvas.width, canvas.height);
+        const alpha48 = await this.getAlphaMap(48);
+        const alpha96 = await this.getAlphaMap(96);
+        const resolvedConfig = resolveInitialStandardConfig({
+            imageData: originalImageData,
+            defaultConfig,
+            alpha48,
+            alpha96
+        });
+
+        let config = resolvedConfig;
         let position = calculateWatermarkPosition(canvas.width, canvas.height, config);
-        let alphaMap = await this.getAlphaMap(config.logoSize);
+        let alphaMap = config.logoSize === 96 ? alpha96 : alpha48;
+        let source = 'standard';
 
         // First pass: keep the fast fixed-rule path.
         const fixedImageData = new ImageData(
@@ -173,7 +147,6 @@ export class WatermarkEngine {
 
         // Fallback: run adaptive search only when residual signal remains high.
         if (shouldFallback) {
-            const alpha96 = await this.getAlphaMap(96);
             const adaptive = detectAdaptiveWatermarkRegion({
                 imageData: originalImageData,
                 alpha96,
@@ -197,6 +170,12 @@ export class WatermarkEngine {
                 if (positionDelta >= 4) {
                     position = adaptivePosition;
                     alphaMap = await this.getAlphaMap(size);
+                    config = {
+                        logoSize: size,
+                        marginRight: canvas.width - adaptivePosition.x - size,
+                        marginBottom: canvas.height - adaptivePosition.y - size
+                    };
+                    source = 'adaptive';
                     const adaptiveImageData = new ImageData(
                         new Uint8ClampedArray(originalImageData.data),
                         originalImageData.width,
@@ -210,6 +189,22 @@ export class WatermarkEngine {
 
         // Write processed image data back to canvas
         ctx.putImageData(finalImageData, 0, 0);
+
+        canvas.__watermarkMeta = {
+            size: position.width,
+            position: {
+                x: position.x,
+                y: position.y,
+                width: position.width,
+                height: position.height
+            },
+            config: {
+                logoSize: config.logoSize,
+                marginRight: config.marginRight,
+                marginBottom: config.marginBottom
+            },
+            source
+        };
 
         return canvas;
     }

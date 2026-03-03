@@ -1,6 +1,6 @@
 [English](README.md)
 
-# Gemini 无损去水印工具 - [banana.ovo.re](https://banana.ovo.re)
+# Gemini 无损去水印工具 - [gemini.pilio.ai](https://gemini.pilio.ai)
 
 基于 Javascript 的纯浏览器端 Gemini AI 图像无损去水印工具，使用数学精确的反向 Alpha 混合算法
 
@@ -57,7 +57,7 @@
 
 ### 在线使用
 
-1. 浏览器打开 [banana.ovo.re](https://banana.ovo.re)
+1. 浏览器打开 [gemini.pilio.ai](https://gemini.pilio.ai)
 2. 拖拽或点击选择带水印的 Gemini 图片
 3. 图片会自动开始处理，移除水印
 4. 下载处理后的图片
@@ -65,7 +65,7 @@
 ### 油猴脚本
 
 1. 安装油猴插件（如 Tampermonkey 或 Greasemonkey）
-2. 打开 [gemini-watermark-remover.user.js](https://banana.ovo.re/userscript/gemini-watermark-remover.user.js)
+2. 打开 [gemini-watermark-remover.user.js](https://gemini.pilio.ai/userscript/gemini-watermark-remover.user.js)
 3. 脚本会自动安装到浏览器中
 4. Gemini 对话页面点击复制或者下载图片时，会自动移除水印
 

@@ -1,4 +1,5 @@
 import { WatermarkEngine } from '../core/watermarkEngine.js';
+import { isGeminiGeneratedAssetUrl, normalizeGoogleusercontentImageUrl } from './urlUtils.js';
 
 let engine = null;
 const processingQueue = new Set();
@@ -37,11 +38,6 @@ const fetchBlob = (url) => new Promise((resolve, reject) => {
   });
 });
 
-const replaceWithNormalSize = (src) => {
-  // use normal size image to fit watermark
-  return src.replace(/=s\d+(?=[-?#]|$)/, '=s0');
-}
-
 async function processImage(imgElement) {
   if (!engine || processingQueue.has(imgElement)) return;
 
@@ -51,7 +47,7 @@ async function processImage(imgElement) {
   const originalSrc = imgElement.src;
   try {
     imgElement.src = '';
-    const normalSizeBlob = await fetchBlob(replaceWithNormalSize(originalSrc));
+    const normalSizeBlob = await fetchBlob(normalizeGoogleusercontentImageUrl(originalSrc));
     const normalSizeBlobUrl = URL.createObjectURL(normalSizeBlob);
     const normalSizeImg = await loadImage(normalSizeBlobUrl);
     const processedCanvas = await engine.removeWatermarkFromImage(normalSizeImg, { adaptiveMode: 'always' });
@@ -94,19 +90,22 @@ async function processImageBlob(blob) {
   return canvasToBlob(canvas);
 }
 
-// Only match gemini generated assets(copy & download), ignore user-upload previews.
-const GEMINI_URL_PATTERN = /^https:\/\/lh3\.googleusercontent\.com\/rd-gg(?:-dl)?\/.+=s(?!0-d\?).*/;
-
 // Intercept fetch requests to replace downloadable image with the watermark removed image
 const { fetch: origFetch } = unsafeWindow;
 unsafeWindow.fetch = async (...args) => {
-  const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-  if (GEMINI_URL_PATTERN.test(url)) {
+  const input = args[0];
+  const url = typeof input === 'string' ? input : input?.url;
+  if (isGeminiGeneratedAssetUrl(url)) {
     console.log('[Gemini Watermark Remover] Intercepting:', url);
 
-    const origUrl = replaceWithNormalSize(url);
-    if (typeof args[0] === 'string') args[0] = origUrl;
-    else if (args[0]?.url) args[0].url = origUrl;
+    const normalizedUrl = normalizeGoogleusercontentImageUrl(url);
+    if (typeof input === 'string') {
+      args[0] = normalizedUrl;
+    } else if (typeof Request !== 'undefined' && input instanceof Request) {
+      args[0] = new Request(normalizedUrl, input);
+    } else {
+      args[0] = normalizedUrl;
+    }
 
     const response = await origFetch(...args);
     if (!engine || !response.ok) return response;
