@@ -5,6 +5,7 @@ import {
 } from './core/watermarkEngine.js';
 import { WatermarkWorkerClient, canUseWatermarkWorker } from './core/workerClient.js';
 import { resolveDisplayWatermarkInfo } from './core/watermarkDisplay.js';
+import { canvasToBlob } from './core/canvasBlob.js';
 import i18n from './i18n.js';
 import {
     loadImage,

@@ -1,11 +1,22 @@
 import { WatermarkEngine } from '../core/watermarkEngine.js';
+import { canvasToBlob } from '../core/canvasBlob.js';
 import { isGeminiGeneratedAssetUrl, normalizeGoogleusercontentImageUrl } from './urlUtils.js';
+import { toWorkerScriptUrl } from './trustedTypes.js';
+import { shouldUseInlineWorker } from './runtimeFlags.js';
+import {
+  MAX_PROCESS_RETRIES,
+  readRetryState,
+  registerProcessFailure,
+  resetRetryState,
+  shouldProcessNow
+} from './retryPolicy.js';
 
 const USERSCRIPT_WORKER_CODE = typeof __US_WORKER_CODE__ === 'string' ? __US_WORKER_CODE__ : '';
 
 let enginePromise = null;
 let workerClient = null;
 const processingQueue = new Set();
+const retryTimers = new WeakMap();
 
 const debounce = (func, wait) => {
   let timeout;
@@ -22,13 +33,7 @@ const loadImage = (src) => new Promise((resolve, reject) => {
   img.src = src;
 });
 
-const canvasToBlob = (canvas, type = 'image/png') =>
-  new Promise(resolve => canvas.toBlob(resolve, type));
-
-const canUseInlineWorker = () =>
-  typeof Worker !== 'undefined' &&
-  typeof Blob !== 'undefined' &&
-  USERSCRIPT_WORKER_CODE.length > 0;
+const canUseInlineWorker = () => shouldUseInlineWorker(USERSCRIPT_WORKER_CODE);
 
 const toError = (errorLike, fallback = 'Inline worker error') => {
   if (errorLike instanceof Error) return errorLike;
@@ -43,8 +48,14 @@ class InlineWorkerClient {
   constructor(workerCode) {
     const blob = new Blob([workerCode], { type: 'text/javascript' });
     this.workerUrl = URL.createObjectURL(blob);
+    const workerScriptUrl = toWorkerScriptUrl(this.workerUrl);
+    if (!workerScriptUrl) {
+      URL.revokeObjectURL(this.workerUrl);
+      this.workerUrl = null;
+      throw new Error('Trusted Types policy unavailable for inline worker');
+    }
     try {
-      this.worker = new Worker(this.workerUrl);
+      this.worker = new Worker(workerScriptUrl);
     } catch (error) {
       URL.revokeObjectURL(this.workerUrl);
       this.workerUrl = null;
@@ -180,7 +191,28 @@ async function processBlobWithBestPath(blob, options = {}) {
   }
 }
 
+function clearRetryTimer(imgElement) {
+  const timerId = retryTimers.get(imgElement);
+  if (timerId) {
+    clearTimeout(timerId);
+    retryTimers.delete(imgElement);
+  }
+}
+
+function scheduleRetry(imgElement, delayMs) {
+  clearRetryTimer(imgElement);
+  const timerId = setTimeout(() => {
+    retryTimers.delete(imgElement);
+    if (!document.contains(imgElement)) return;
+    processImage(imgElement);
+  }, delayMs);
+  retryTimers.set(imgElement, timerId);
+}
+
 async function processImage(imgElement) {
+  if (imgElement?.dataset?.watermarkProcessed === 'true') return;
+  const retryState = readRetryState(imgElement?.dataset);
+  if (!shouldProcessNow(retryState)) return;
   if (processingQueue.has(imgElement)) return;
 
   processingQueue.add(imgElement);
@@ -198,13 +230,29 @@ async function processImage(imgElement) {
     const objectUrl = URL.createObjectURL(processedBlob);
     imgElement.dataset.watermarkObjectUrl = objectUrl;
     imgElement.src = objectUrl;
+    clearRetryTimer(imgElement);
+    resetRetryState(imgElement.dataset);
     imgElement.dataset.watermarkProcessed = 'true';
 
     console.log('[Gemini Watermark Remover] Processed image');
   } catch (error) {
-    console.warn('[Gemini Watermark Remover] Failed to process image:', error);
-    imgElement.dataset.watermarkProcessed = 'failed';
+    const retry = registerProcessFailure(imgElement.dataset);
     imgElement.src = originalSrc;
+    if (retry.exhausted) {
+      clearRetryTimer(imgElement);
+      imgElement.dataset.watermarkProcessed = 'failed';
+      console.warn(
+        `[Gemini Watermark Remover] Failed ${retry.failureCount} times, stop retrying to avoid resource leaks:`,
+        error
+      );
+    } else {
+      imgElement.dataset.watermarkProcessed = 'retrying';
+      scheduleRetry(imgElement, retry.delayMs);
+      console.warn(
+        `[Gemini Watermark Remover] Failed to process image, retry ${retry.failureCount}/${MAX_PROCESS_RETRIES} in ${retry.delayMs}ms:`,
+        error
+      );
+    }
   } finally {
     processingQueue.delete(imgElement);
   }
