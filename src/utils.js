@@ -1,39 +1,7 @@
 import exifr from 'exifr';
 import i18n from './i18n.js';
-
-const GEMINI_LEGACY_DIMENSIONS = Object.freeze([
-    [1024, 1024],
-    [832, 1248],
-    [1248, 832],
-    [864, 1184],
-    [1184, 864],
-    [896, 1152],
-    [1152, 896],
-    [768, 1344],
-    [1344, 768],
-    [1536, 672]
-]);
-
-const GEMINI_ASPECT_RATIOS = Object.freeze([
-    1 / 1,
-    1 / 4,
-    1 / 8,
-    2 / 3,
-    3 / 2,
-    3 / 4,
-    4 / 1,
-    4 / 3,
-    4 / 5,
-    5 / 4,
-    8 / 1,
-    9 / 16,
-    16 / 9,
-    21 / 9
-]);
-
-const GEMINI_AREA_TIERS = Object.freeze([1024 * 1024, 2048 * 2048, 4096 * 4096]);
-const GEMINI_STEP = 16;
-const GEMINI_DIMENSION_OFFSETS = Object.freeze([-32, -16, 0, 16, 32]);
+import { isOfficialOrKnownGeminiDimensions } from './core/geminiSizeCatalog.js';
+import { classifyGeminiAttributionFromWatermarkMeta } from './core/watermarkDecisionPolicy.js';
 
 function normalizeDimension(value) {
     const numeric = Number(value);
@@ -42,58 +10,11 @@ function normalizeDimension(value) {
     return rounded > 0 ? rounded : null;
 }
 
-function normalizeScore(value) {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
-}
-
-function addDimensionPair(set, width, height) {
-    if (width <= 0 || height <= 0) return;
-    if (width % GEMINI_STEP !== 0 || height % GEMINI_STEP !== 0) return;
-    set.add(`${width}x${height}`);
-}
-
-function buildLikelyGeminiDimensionSet() {
-    const set = new Set();
-    for (const [width, height] of GEMINI_LEGACY_DIMENSIONS) {
-        addDimensionPair(set, width, height);
-    }
-
-    for (const aspect of GEMINI_ASPECT_RATIOS) {
-        for (const area of GEMINI_AREA_TIERS) {
-            const idealWidth = Math.sqrt(area * aspect);
-            const idealHeight = Math.sqrt(area / aspect);
-            const baseWidth = Math.round(idealWidth / GEMINI_STEP) * GEMINI_STEP;
-            const baseHeight = Math.round(idealHeight / GEMINI_STEP) * GEMINI_STEP;
-
-            for (const dw of GEMINI_DIMENSION_OFFSETS) {
-                for (const dh of GEMINI_DIMENSION_OFFSETS) {
-                    const width = baseWidth + dw;
-                    const height = baseHeight + dh;
-                    if (width <= 0 || height <= 0) continue;
-
-                    const ratioError = Math.abs(width / height - aspect) / aspect;
-                    if (ratioError > 0.04) continue;
-
-                    const areaError = Math.abs(width * height - area) / area;
-                    if (areaError > 0.12) continue;
-
-                    addDimensionPair(set, width, height);
-                }
-            }
-        }
-    }
-
-    return set;
-}
-
-const LIKELY_GEMINI_DIMENSIONS = buildLikelyGeminiDimensionSet();
-
 export function isLikelyGeminiDimensions(width, height) {
     const normalizedWidth = normalizeDimension(width);
     const normalizedHeight = normalizeDimension(height);
     if (!normalizedWidth || !normalizedHeight) return false;
-    return LIKELY_GEMINI_DIMENSIONS.has(`${normalizedWidth}x${normalizedHeight}`);
+    return isOfficialOrKnownGeminiDimensions(normalizedWidth, normalizedHeight);
 }
 
 function extractImageDimensions(exif) {
@@ -148,51 +69,9 @@ export async function checkOriginal(file) {
 }
 
 export function isLikelyGeminiByWatermarkMeta(
-    watermarkMeta,
-    {
-        minSpatialScore = 0.22,
-        maxResidualScore = 0.2,
-        minSuppressionGain = 0.25,
-        minAdaptiveConfidence = 0.35,
-        minAdaptiveSuppressionGain = 0.16,
-        minSize = 24,
-        maxSize = 192
-    } = {}
+    watermarkMeta
 ) {
-    if (!watermarkMeta || typeof watermarkMeta !== 'object') return false;
-    if (watermarkMeta.applied === false) return false;
-
-    const size = normalizeDimension(watermarkMeta.size);
-    if (!size || size < minSize || size > maxSize) return false;
-
-    const position = watermarkMeta.position;
-    const positionWidth = normalizeDimension(position?.width);
-    const positionHeight = normalizeDimension(position?.height);
-    if (!positionWidth || !positionHeight) return false;
-
-    const detection = watermarkMeta.detection || {};
-    const adaptiveConfidence = normalizeScore(detection.adaptiveConfidence);
-    const originalSpatialScore = normalizeScore(detection.originalSpatialScore);
-    const processedSpatialScore = normalizeScore(detection.processedSpatialScore);
-    const suppressionGain = normalizeScore(detection.suppressionGain);
-
-    if (
-        adaptiveConfidence !== null &&
-        adaptiveConfidence >= minAdaptiveConfidence &&
-        suppressionGain !== null &&
-        suppressionGain >= minAdaptiveSuppressionGain
-    ) {
-        return true;
-    }
-
-    return (
-        originalSpatialScore !== null &&
-        processedSpatialScore !== null &&
-        suppressionGain !== null &&
-        originalSpatialScore >= minSpatialScore &&
-        processedSpatialScore <= maxResidualScore &&
-        suppressionGain >= minSuppressionGain
-    );
+    return classifyGeminiAttributionFromWatermarkMeta(watermarkMeta).tier !== 'insufficient';
 }
 
 export function resolveOriginalValidation(validation, watermarkMeta) {

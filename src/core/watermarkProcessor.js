@@ -3,29 +3,25 @@ import { removeRepeatedWatermarkLayers } from './multiPassRemoval.js';
 import {
     computeRegionGradientCorrelation,
     computeRegionSpatialCorrelation,
-    detectAdaptiveWatermarkRegion,
-    warpAlphaMap,
-    shouldAttemptAdaptiveFallback
+    warpAlphaMap
 } from './adaptiveDetector.js';
+import {
+    calculateNearBlackRatio,
+    scoreRegion,
+    selectInitialCandidate
+} from './candidateSelector.js';
 import {
     calculateWatermarkPosition,
     detectWatermarkConfig,
     resolveInitialStandardConfig
 } from './watermarkConfig.js';
-import {
-    hasReliableAdaptiveWatermarkSignal,
-    hasReliableStandardWatermarkSignal
-} from './watermarkPresence.js';
 
 const RESIDUAL_RECALIBRATION_THRESHOLD = 0.5;
 const MIN_SUPPRESSION_FOR_SKIP_RECALIBRATION = 0.18;
 const MIN_RECALIBRATION_SCORE_DELTA = 0.18;
-const NEAR_BLACK_THRESHOLD = 5;
 const MAX_NEAR_BLACK_RATIO_INCREASE = 0.05;
 const OUTLINE_REFINEMENT_THRESHOLD = 0.42;
 const OUTLINE_REFINEMENT_MIN_GAIN = 1.2;
-const TEMPLATE_ALIGN_SHIFTS = [-0.5, -0.25, 0, 0.25, 0.5];
-const TEMPLATE_ALIGN_SCALES = [0.99, 1, 1.01];
 const SUBPIXEL_REFINE_SHIFTS = [-0.25, 0, 0.25];
 const SUBPIXEL_REFINE_SCALES = [0.99, 1, 1.01];
 const ALPHA_GAIN_CANDIDATES = [1.05, 1.12, 1.2, 1.28, 1.36, 1.45, 1.52, 1.6, 1.7, 1.85, 2.0, 2.2, 2.4, 2.6];
@@ -84,6 +80,7 @@ function createWatermarkMeta({
     passStopReason = null,
     passes = null,
     source = 'standard',
+    decisionTier = null,
     applied = true,
     skipReason = null,
     subpixelShift = null
@@ -110,7 +107,10 @@ function createWatermarkMeta({
         attemptedPassCount,
         passStopReason,
         passes: Array.isArray(passes) ? passes : null,
+        // decisionTier is the normalized contract used by UI and attribution.
+        // source remains as a verbose execution trace for debugging/tests.
         source,
+        decisionTier,
         subpixelShift: subpixelShift ?? null
     };
 }
@@ -119,82 +119,6 @@ function shouldRecalibrateAlphaStrength({ originalScore, processedScore, suppres
     return originalScore >= 0.6 &&
         processedScore >= RESIDUAL_RECALIBRATION_THRESHOLD &&
         suppressionGain <= MIN_SUPPRESSION_FOR_SKIP_RECALIBRATION;
-}
-
-function calculateNearBlackRatio(imageData, position) {
-    let nearBlack = 0;
-    let total = 0;
-    for (let row = 0; row < position.height; row++) {
-        for (let col = 0; col < position.width; col++) {
-            const idx = ((position.y + row) * imageData.width + (position.x + col)) * 4;
-            const r = imageData.data[idx];
-            const g = imageData.data[idx + 1];
-            const b = imageData.data[idx + 2];
-            if (r <= NEAR_BLACK_THRESHOLD && g <= NEAR_BLACK_THRESHOLD && b <= NEAR_BLACK_THRESHOLD) {
-                nearBlack++;
-            }
-            total++;
-        }
-    }
-
-    return total > 0 ? nearBlack / total : 0;
-}
-
-function findBestTemplateWarp({
-    originalImageData,
-    alphaMap,
-    position,
-    baselineSpatialScore,
-    baselineGradientScore
-}) {
-    const size = position.width;
-    if (!size || size <= 8) return null;
-
-    let best = {
-        spatialScore: baselineSpatialScore,
-        gradientScore: baselineGradientScore,
-        shift: { dx: 0, dy: 0, scale: 1 },
-        alphaMap
-    };
-
-    for (const scale of TEMPLATE_ALIGN_SCALES) {
-        for (const dy of TEMPLATE_ALIGN_SHIFTS) {
-            for (const dx of TEMPLATE_ALIGN_SHIFTS) {
-                if (dx === 0 && dy === 0 && scale === 1) continue;
-                const warped = warpAlphaMap(alphaMap, size, { dx, dy, scale });
-                const spatialScore = computeRegionSpatialCorrelation({
-                    imageData: originalImageData,
-                    alphaMap: warped,
-                    region: { x: position.x, y: position.y, size }
-                });
-                const gradientScore = computeRegionGradientCorrelation({
-                    imageData: originalImageData,
-                    alphaMap: warped,
-                    region: { x: position.x, y: position.y, size }
-                });
-
-                const confidence =
-                    Math.max(0, spatialScore) * 0.7 +
-                    Math.max(0, gradientScore) * 0.3;
-                const bestConfidence =
-                    Math.max(0, best.spatialScore) * 0.7 +
-                    Math.max(0, best.gradientScore) * 0.3;
-
-                if (confidence > bestConfidence + 0.01) {
-                    best = {
-                        spatialScore,
-                        gradientScore,
-                        shift: { dx, dy, scale },
-                        alphaMap: warped
-                    };
-                }
-            }
-        }
-    }
-
-    const improvedSpatial = best.spatialScore >= baselineSpatialScore + 0.01;
-    const improvedGradient = best.gradientScore >= baselineGradientScore + 0.01;
-    return improvedSpatial || improvedGradient ? best : null;
 }
 
 function refineSubpixelOutline({
@@ -381,166 +305,58 @@ export function processWatermarkImageData(imageData, options = {}) {
     let adaptiveConfidence = null;
     let alphaGain = 1;
     let subpixelShift = null;
+    let templateWarp = null;
+    let decisionTier = null;
     let passCount = 0;
     let attemptedPassCount = 0;
     let passStopReason = null;
     let passes = null;
 
-    const standardSpatialScore = computeRegionSpatialCorrelation({
-        imageData: originalImageData,
-        alphaMap,
-        region: {
-            x: position.x,
-            y: position.y,
-            size: position.width
-        }
-    });
-    const standardGradientScore = computeRegionGradientCorrelation({
-        imageData: originalImageData,
-        alphaMap,
-        region: {
-            x: position.x,
-            y: position.y,
-            size: position.width
-        }
-    });
-
-    if (!hasReliableStandardWatermarkSignal({
-        spatialScore: standardSpatialScore,
-        gradientScore: standardGradientScore
-    })) {
-        const adaptive = allowAdaptiveSearch
-            ? detectAdaptiveWatermarkRegion({
-                imageData: originalImageData,
-                alpha96,
-                defaultConfig: config
-            })
-            : null;
-
-        adaptiveConfidence = adaptive?.confidence ?? null;
-
-        if (!hasReliableAdaptiveWatermarkSignal(adaptive)) {
-            return {
-                imageData: originalImageData,
-                meta: createWatermarkMeta({
-                    adaptiveConfidence,
-                    originalSpatialScore: standardSpatialScore,
-                    originalGradientScore: standardGradientScore,
-                    processedSpatialScore: standardSpatialScore,
-                    processedGradientScore: standardGradientScore,
-                    suppressionGain: 0,
-                    alphaGain: 1,
-                    source: 'skipped',
-                    applied: false,
-                    skipReason: 'no-watermark-detected'
-                })
-            };
-        }
-
-        const size = adaptive.region.size;
-        position = {
-            x: adaptive.region.x,
-            y: adaptive.region.y,
-            width: size,
-            height: size
-        };
-        alphaMap = size === 96 ? alpha96 : options.getAlphaMap?.(size);
-        if (!alphaMap) {
-            throw new Error(`Missing alpha map for adaptive size ${size}`);
-        }
-        config = {
-            logoSize: size,
-            marginRight: originalImageData.width - position.x - size,
-            marginBottom: originalImageData.height - position.y - size
-        };
-        source = 'adaptive';
-    }
-
-    const fixedImageData = cloneImageData(originalImageData);
-    removeWatermark(fixedImageData, alphaMap, position);
-
-    let finalImageData = fixedImageData;
-    const shouldFallback = adaptiveMode === 'always'
-        ? true
-        : shouldAttemptAdaptiveFallback({
-            processedImageData: fixedImageData,
-            alphaMap,
-            position,
-            originalImageData,
-            originalSpatialMismatchThreshold: 0
-        });
-
-    if (shouldFallback && allowAdaptiveSearch) {
-        const adaptive = detectAdaptiveWatermarkRegion({
-            imageData: originalImageData,
-            alpha96,
-            defaultConfig: config
-        });
-
-        if (hasReliableAdaptiveWatermarkSignal(adaptive)) {
-            adaptiveConfidence = adaptive.confidence;
-            const size = adaptive.region.size;
-            const adaptivePosition = {
-                x: adaptive.region.x,
-                y: adaptive.region.y,
-                width: size,
-                height: size
-            };
-            const positionDelta =
-                Math.abs(adaptivePosition.x - position.x) +
-                Math.abs(adaptivePosition.y - position.y) +
-                Math.abs(adaptivePosition.width - position.width);
-
-            if (positionDelta >= 4) {
-                position = adaptivePosition;
-                alphaMap = size === 96 ? alpha96 : options.getAlphaMap?.(size);
-                if (!alphaMap) {
-                    throw new Error(`Missing alpha map for adaptive size ${size}`);
-                }
-                config = {
-                    logoSize: size,
-                    marginRight: originalImageData.width - adaptivePosition.x - size,
-                    marginBottom: originalImageData.height - adaptivePosition.y - size
-                };
-                source = 'adaptive';
-                const adaptiveImageData = cloneImageData(originalImageData);
-                removeWatermark(adaptiveImageData, alphaMap, position);
-                finalImageData = adaptiveImageData;
-            }
-        }
-    }
-
-    let originalSpatialScore = computeRegionSpatialCorrelation({
-        imageData: originalImageData,
-        alphaMap,
-        region: {
-            x: position.x,
-            y: position.y,
-            size: position.width
-        }
-    });
-    let originalGradientScore = computeRegionGradientCorrelation({
-        imageData: originalImageData,
-        alphaMap,
-        region: {
-            x: position.x,
-            y: position.y,
-            size: position.width
-        }
-    });
-
-    const templateWarp = findBestTemplateWarp({
+    const initialSelection = selectInitialCandidate({
         originalImageData,
-        alphaMap,
+        config,
         position,
-        baselineSpatialScore: originalSpatialScore,
-        baselineGradientScore: originalGradientScore
+        alpha48,
+        alpha96,
+        getAlphaMap: options.getAlphaMap,
+        allowAdaptiveSearch,
+        alphaGainCandidates: ALPHA_GAIN_CANDIDATES
     });
-    if (templateWarp) {
-        alphaMap = templateWarp.alphaMap;
-        originalSpatialScore = templateWarp.spatialScore;
-        originalGradientScore = templateWarp.gradientScore;
+
+    if (!initialSelection.selectedTrial) {
+        return {
+            imageData: originalImageData,
+            meta: createWatermarkMeta({
+                adaptiveConfidence: initialSelection.adaptiveConfidence,
+                originalSpatialScore: initialSelection.standardSpatialScore,
+                originalGradientScore: initialSelection.standardGradientScore,
+                processedSpatialScore: initialSelection.standardSpatialScore,
+                processedGradientScore: initialSelection.standardGradientScore,
+                suppressionGain: 0,
+                alphaGain: 1,
+                source: 'skipped',
+                decisionTier: initialSelection.decisionTier ?? 'insufficient',
+                applied: false,
+                skipReason: 'no-watermark-detected'
+            })
+        };
     }
+
+    position = initialSelection.position;
+    alphaMap = initialSelection.alphaMap;
+    config = initialSelection.config;
+    source = initialSelection.source;
+    adaptiveConfidence = initialSelection.adaptiveConfidence;
+    templateWarp = initialSelection.templateWarp;
+    alphaGain = initialSelection.alphaGain;
+    decisionTier = initialSelection.decisionTier;
+
+    const selectedTrial = initialSelection.selectedTrial;
+
+    let finalImageData = selectedTrial.imageData;
+
+    let originalSpatialScore = selectedTrial.originalSpatialScore;
+    let originalGradientScore = selectedTrial.originalGradientScore;
 
     const firstPassSpatialScore = computeRegionSpatialCorrelation({
         imageData: finalImageData,
@@ -566,19 +382,21 @@ export function processWatermarkImageData(imageData, options = {}) {
 
     const totalMaxPasses = Math.max(1, options.maxPasses ?? 4);
     const remainingPasses = Math.max(0, totalMaxPasses - 1);
-    const extraPassResult = remainingPasses > 0
+    const firstPassClearedResidual = Math.abs(firstPassSpatialScore) <= 0.25;
+    const extraPassResult = remainingPasses > 0 && !firstPassClearedResidual
         ? removeRepeatedWatermarkLayers({
             imageData: finalImageData,
             alphaMap,
             position,
             maxPasses: remainingPasses,
-            startingPassIndex: 1
+            startingPassIndex: 1,
+            alphaGain
         })
         : null;
     finalImageData = extraPassResult?.imageData ?? finalImageData;
     passCount = extraPassResult?.passCount ?? 1;
     attemptedPassCount = extraPassResult?.attemptedPassCount ?? 1;
-    passStopReason = extraPassResult?.stopReason ?? (Math.abs(firstPassSpatialScore) <= 0.25 ? 'residual-low' : 'max-passes');
+    passStopReason = extraPassResult?.stopReason ?? (firstPassClearedResidual ? 'residual-low' : 'max-passes');
     passes = [firstPassRecord, ...(extraPassResult?.passes ?? [])];
     if (passCount > 1) {
         source = `${source}+multipass`;
@@ -632,7 +450,7 @@ export function processWatermarkImageData(imageData, options = {}) {
 
     if (finalProcessedSpatialScore <= 0.3 && finalProcessedGradientScore >= OUTLINE_REFINEMENT_THRESHOLD) {
         const originalNearBlackRatio = calculateNearBlackRatio(finalImageData, position);
-        const baselineShift = templateWarp?.shift ?? { dx: 0, dy: 0, scale: 1 };
+        const baselineShift = templateWarp ?? { dx: 0, dy: 0, scale: 1 };
         const refined = refineSubpixelOutline({
             sourceImageData: finalImageData,
             alphaMap,
@@ -667,13 +485,14 @@ export function processWatermarkImageData(imageData, options = {}) {
             processedSpatialScore: finalProcessedSpatialScore,
             processedGradientScore: finalProcessedGradientScore,
             suppressionGain,
-            templateWarp: templateWarp?.shift ?? null,
+            templateWarp,
             alphaGain,
             passCount,
             attemptedPassCount,
             passStopReason,
             passes,
             source,
+            decisionTier,
             applied: true,
             subpixelShift
         })

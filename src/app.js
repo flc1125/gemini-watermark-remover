@@ -4,7 +4,10 @@ import {
     calculateWatermarkPosition
 } from './core/watermarkEngine.js';
 import { WatermarkWorkerClient, canUseWatermarkWorker } from './core/workerClient.js';
-import { resolveDisplayWatermarkInfo } from './core/watermarkDisplay.js';
+import {
+    isConfirmedWatermarkDecision,
+    resolveDisplayWatermarkInfo
+} from './core/watermarkDisplay.js';
 import { canvasToBlob } from './core/canvasBlob.js';
 import i18n from './i18n.js';
 import {
@@ -253,7 +256,7 @@ function renderSingleImageMeta(item) {
 }
 
 function getProcessedStatusLabel(item) {
-    return item?.processedMeta?.applied === false
+    return !isConfirmedWatermarkDecision(item)
         ? i18n.t('info.skipped')
         : i18n.t('info.removed');
 }
@@ -265,7 +268,7 @@ function renderSingleProcessedMeta(item) {
         item,
         getEstimatedWatermarkInfo(item)
     );
-    const showWatermarkInfo = watermarkInfo && item?.processedMeta?.applied !== false;
+    const showWatermarkInfo = watermarkInfo && isConfirmedWatermarkDecision(item);
 
     processedInfo.innerHTML = `
         <p>${i18n.t('info.size')}: ${item.originalImg.width}×${item.originalImg.height}</p>
@@ -299,7 +302,7 @@ function renderImageCardStatus(item) {
         item,
         getEstimatedWatermarkInfo(item)
     );
-    const showWatermarkInfo = watermarkInfo && item?.processedMeta?.applied !== false;
+    const showWatermarkInfo = watermarkInfo && isConfirmedWatermarkDecision(item);
 
     let html = `<p>${i18n.t('info.size')}: ${item.originalImg.width}×${item.originalImg.height}</p>`;
     if (showWatermarkInfo) {

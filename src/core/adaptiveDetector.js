@@ -3,6 +3,8 @@
  * Uses coarse-to-fine template matching around bottom-right region.
  */
 
+import { resolveGeminiWatermarkSearchConfigs } from './geminiSizeCatalog.js';
+
 const DEFAULT_THRESHOLD = 0.35;
 const EPSILON = 1e-8;
 
@@ -170,6 +172,12 @@ function createScaleList(minSize, maxSize) {
     return [...set].sort((a, b) => a - b);
 }
 
+function buildSeedConfigs(width, height, defaultConfig) {
+    // Start adaptive search from both the coarse default anchor and any
+    // catalog-projected anchors for official or near-official Gemini sizes.
+    return resolveGeminiWatermarkSearchConfigs(width, height, defaultConfig);
+}
+
 function getTemplate(cache, alpha96, size) {
     if (cache.has(size)) return cache.get(size);
 
@@ -328,25 +336,50 @@ export function detectAdaptiveWatermarkRegion({
     const context = { gray, grad, width, height };
     const templateCache = new Map();
 
-    const baseSize = defaultConfig.logoSize;
-    const defaultCandidate = {
-        size: baseSize,
-        x: width - defaultConfig.marginRight - baseSize,
-        y: height - defaultConfig.marginBottom - baseSize
-    };
+    const seedConfigs = buildSeedConfigs(width, height, defaultConfig);
+    const seedCandidates = seedConfigs
+        .map((config) => {
+            const size = config.logoSize;
+            const candidate = {
+                size,
+                x: width - config.marginRight - size,
+                y: height - config.marginBottom - size
+            };
+            if (candidate.x < 0 || candidate.y < 0 || candidate.x + size > width || candidate.y + size > height) {
+                return null;
+            }
 
-    const defaultTemplate = getTemplate(templateCache, alpha96, baseSize);
-    const defaultScore = scoreCandidate(context, defaultTemplate.alpha, defaultTemplate.grad, defaultCandidate);
-    if (defaultScore && defaultScore.confidence >= threshold + 0.08) {
+            const template = getTemplate(templateCache, alpha96, size);
+            const score = scoreCandidate(context, template.alpha, template.grad, candidate);
+            if (!score) return null;
+
+            return {
+                ...candidate,
+                ...score
+            };
+        })
+        .filter(Boolean);
+
+    const bestSeed = seedCandidates.reduce((best, candidate) => {
+        if (!best || candidate.confidence > best.confidence) return candidate;
+        return best;
+    }, null);
+    if (bestSeed && bestSeed.confidence >= threshold + 0.08) {
         return {
             found: true,
-            confidence: defaultScore.confidence,
-            spatialScore: defaultScore.spatialScore,
-            gradientScore: defaultScore.gradientScore,
-            varianceScore: defaultScore.varianceScore,
-            region: defaultCandidate
+            confidence: bestSeed.confidence,
+            spatialScore: bestSeed.spatialScore,
+            gradientScore: bestSeed.gradientScore,
+            varianceScore: bestSeed.varianceScore,
+            region: {
+                x: bestSeed.x,
+                y: bestSeed.y,
+                size: bestSeed.size
+            }
         };
     }
+
+    const baseSize = defaultConfig.logoSize;
 
     const minSize = clamp(Math.round(baseSize * 0.65), 24, 144);
     const maxSize = clamp(
@@ -368,6 +401,15 @@ export function detectAdaptiveWatermarkRegion({
         topK.sort((a, b) => b.adjustedScore - a.adjustedScore);
         if (topK.length > 5) topK.length = 5;
     };
+
+    for (const seedCandidate of seedCandidates) {
+        pushTopK({
+            size: seedCandidate.size,
+            x: seedCandidate.x,
+            y: seedCandidate.y,
+            adjustedScore: seedCandidate.confidence * Math.min(1, Math.sqrt(seedCandidate.size / 96))
+        });
+    }
 
     for (const size of scaleList) {
         const tpl = getTemplate(templateCache, alpha96, size);
@@ -395,11 +437,10 @@ export function detectAdaptiveWatermarkRegion({
         }
     }
 
-    let best = defaultScore ? {
-        ...defaultCandidate,
-        ...defaultScore
-    } : {
-        ...defaultCandidate,
+    let best = bestSeed ?? {
+        x: width - defaultConfig.marginRight - defaultConfig.logoSize,
+        y: height - defaultConfig.marginBottom - defaultConfig.logoSize,
+        size: defaultConfig.logoSize,
         confidence: 0,
         spatialScore: 0,
         gradientScore: 0,

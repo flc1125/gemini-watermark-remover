@@ -20,6 +20,15 @@ function buildConfigFromPosition(item, size, position) {
     };
 }
 
+export function isConfirmedWatermarkDecision(item) {
+    const decisionTier = item?.processedMeta?.decisionTier;
+    if (typeof decisionTier === 'string') {
+        return decisionTier !== 'insufficient';
+    }
+
+    return item?.processedMeta?.applied !== false;
+}
+
 /**
  * Resolve watermark info for UI display.
  * Prefer processed runtime metadata and fallback to static estimate.
@@ -35,7 +44,8 @@ export function resolveDisplayWatermarkInfo(item, estimatedInfo) {
                 size,
                 position,
                 config: processedMeta.config || buildConfigFromPosition(item, size, position),
-                source: processedMeta.source || 'processed'
+                source: processedMeta.source || 'processed',
+                decisionTier: processedMeta.decisionTier || null
             };
         }
     }
@@ -44,6 +54,7 @@ export function resolveDisplayWatermarkInfo(item, estimatedInfo) {
 
     return {
         ...estimatedInfo,
-        source: 'estimated'
+        source: 'estimated',
+        decisionTier: null
     };
 }

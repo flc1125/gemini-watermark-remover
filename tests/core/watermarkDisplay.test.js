@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveDisplayWatermarkInfo } from '../../src/core/watermarkDisplay.js';
+import {
+    isConfirmedWatermarkDecision,
+    resolveDisplayWatermarkInfo
+} from '../../src/core/watermarkDisplay.js';
 
 test('resolveDisplayWatermarkInfo should prefer processed meta over estimated info', () => {
     const item = {
@@ -44,4 +47,26 @@ test('resolveDisplayWatermarkInfo should fallback to estimated info when process
     assert.equal(display.size, 48);
     assert.deepEqual(display.position, estimated.position);
     assert.equal(display.source, 'estimated');
+});
+
+test('isConfirmedWatermarkDecision should prefer decisionTier over legacy applied flag', () => {
+    assert.equal(
+        isConfirmedWatermarkDecision({
+            processedMeta: {
+                applied: true,
+                decisionTier: 'insufficient'
+            }
+        }),
+        false
+    );
+
+    assert.equal(
+        isConfirmedWatermarkDecision({
+            processedMeta: {
+                applied: true,
+                decisionTier: 'validated-match'
+            }
+        }),
+        true
+    );
 });

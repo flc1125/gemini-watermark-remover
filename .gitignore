@@ -19,3 +19,5 @@ yarn-error.log*
 .artifacts
 .npm-cache-local
 .npm-tmp-cache
+src/assets/samples/*-fix.*
+.tmp-*.png

@@ -145,6 +145,34 @@ test('detectAdaptiveWatermarkRegion should not report confident match on clean i
     assert.ok(result.confidence < 0.35, `confidence=${result.confidence}`);
 });
 
+test('detectAdaptiveWatermarkRegion should recover scaled watermark anchor for near-official dimensions', () => {
+    const alpha96 = createSyntheticAlpha(96);
+    const imageData = createBaseImageData(1000, 1792);
+    const target = {
+        size: 125,
+        x: 1000 - 83 - 125,
+        y: 1792 - 83 - 125
+    };
+    applyWatermark(imageData, alpha96, target);
+
+    const result = detectAdaptiveWatermarkRegion({
+        imageData,
+        alpha96,
+        defaultConfig: {
+            logoSize: 48,
+            marginRight: 32,
+            marginBottom: 32
+        },
+        threshold: 0.35
+    });
+
+    assert.equal(result.found, true);
+    assert.ok(result.confidence >= 0.35, `confidence=${result.confidence}`);
+    assert.ok(Math.abs(result.region.size - target.size) <= 6, `size=${result.region.size}`);
+    assert.ok(Math.abs(result.region.x - target.x) <= 8, `x=${result.region.x}`);
+    assert.ok(Math.abs(result.region.y - target.y) <= 8, `y=${result.region.y}`);
+});
+
 test('computeRegionSpatialCorrelation should be higher on watermark-like patch', () => {
     const alpha96 = createSyntheticAlpha(96);
     const imageData = createBaseImageData(300, 240);

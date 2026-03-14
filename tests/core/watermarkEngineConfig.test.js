@@ -55,7 +55,7 @@ function applyWatermark(imageData, alphaMap, position) {
 }
 
 test('resolveInitialStandardConfig should switch to 96 config when 48 rule is mismatched', () => {
-    const imageData = createImageData(768, 1376, 16);
+    const imageData = createImageData(800, 1400, 16);
     const alpha48 = createSyntheticAlpha(48);
     const alpha96 = createSyntheticAlpha(96);
 
@@ -75,6 +75,14 @@ test('resolveInitialStandardConfig should switch to 96 config when 48 rule is mi
     assert.equal(resolved.logoSize, 96);
     assert.equal(resolved.marginRight, 64);
     assert.equal(resolved.marginBottom, 64);
+});
+
+test('detectWatermarkConfig should prefer 96 config for documented Gemini 1K sizes', () => {
+    const config = detectWatermarkConfig(768, 1376);
+
+    assert.equal(config.logoSize, 96);
+    assert.equal(config.marginRight, 64);
+    assert.equal(config.marginBottom, 64);
 });
 
 test('resolveInitialStandardConfig should keep 48 config when it already matches', () => {

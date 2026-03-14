@@ -1,4 +1,5 @@
 import { computeRegionSpatialCorrelation } from './adaptiveDetector.js';
+import { resolveOfficialGeminiWatermarkConfig } from './geminiSizeCatalog.js';
 
 /**
  * Detect watermark configuration based on image size
@@ -7,6 +8,11 @@ import { computeRegionSpatialCorrelation } from './adaptiveDetector.js';
  * @returns {Object} Watermark configuration {logoSize, marginRight, marginBottom}
  */
 export function detectWatermarkConfig(imageWidth, imageHeight) {
+    const officialConfig = resolveOfficialGeminiWatermarkConfig(imageWidth, imageHeight);
+    if (officialConfig) {
+        return { ...officialConfig };
+    }
+
     // Gemini's historical default rules:
     // If both image width and height are greater than 1024, use 96×96 watermark
     // Otherwise, use 48×48 watermark

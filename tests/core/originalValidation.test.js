@@ -11,6 +11,8 @@ import {
 test('isLikelyGeminiDimensions should include common metadata-stripped Gemini sizes', () => {
     assert.equal(isLikelyGeminiDimensions(768, 1376), true);
     assert.equal(isLikelyGeminiDimensions(848, 1264), true);
+    assert.equal(isLikelyGeminiDimensions(832, 1248), true);
+    assert.equal(isLikelyGeminiDimensions(928, 1152), true);
     assert.equal(isLikelyGeminiDimensions(1024, 1024), true);
 });
 
@@ -127,6 +129,27 @@ test('resolveOriginalValidation should not promote when removal was explicitly s
     );
 
     assert.deepEqual(out, { is_google: false, is_original: true });
+});
+
+test('resolveOriginalValidation should promote validated near-threshold standard removals', () => {
+    const out = resolveOriginalValidation(
+        { is_google: false, is_original: true },
+        {
+            size: 48,
+            source: 'standard+validated',
+            position: { x: 928, y: 991, width: 48, height: 48 },
+            detection: {
+                originalSpatialScore: 0.20566919048343582,
+                processedSpatialScore: -0.19221856811204466,
+                suppressionGain: 0.3978877585954805,
+                originalGradientScore: 0.18464983906035948,
+                processedGradientScore: 0.0491637976752285,
+                adaptiveConfidence: 0.33022714362309186
+            }
+        }
+    );
+
+    assert.deepEqual(out, { is_google: true, is_original: true });
 });
 
 test('getOriginalStatus should not warn for non-original size when Gemini source is confirmed', () => {

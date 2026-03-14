@@ -16,6 +16,16 @@ test('hasReliableStandardWatermarkSignal should accept strong Gemini-like standa
     );
 });
 
+test('hasReliableStandardWatermarkSignal should keep borderline spatial matches for restoration validation instead of direct acceptance', () => {
+    assert.equal(
+        hasReliableStandardWatermarkSignal({
+            spatialScore: 0.2677163775605826,
+            gradientScore: 0.25454479646469025
+        }),
+        false
+    );
+});
+
 test('hasReliableStandardWatermarkSignal should reject weak low-gradient false positive', () => {
     assert.equal(
         hasReliableStandardWatermarkSignal({
