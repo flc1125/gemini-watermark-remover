@@ -802,12 +802,14 @@ test('9-16.png should stop after the first pass when extra passes only reintrodu
         const firstPassOnly = processWatermarkImageData(imageData, {
             alpha48,
             alpha96,
-            getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+            getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+            locatedAggressiveRemoval: false
         });
         const fullResult = processWatermarkImageData(imageData, {
             alpha48,
             alpha96,
-            getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+            getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+            locatedAggressiveRemoval: false
         });
         const position = fullResult.meta.position;
         const alphaMap = fullResult.meta.size === 96 ? alpha96 : interpolateAlphaMap(alpha96, 96, fullResult.meta.size);

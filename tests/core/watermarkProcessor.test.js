@@ -23,7 +23,8 @@ test('processWatermarkImageData should run in Node without asset imports and rec
 
     const result = processWatermarkImageData(imageData, {
         alpha48,
-        alpha96
+        alpha96,
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.imageData.width, 320);
@@ -43,7 +44,8 @@ test('processWatermarkImageData should not attempt extra passes when the first p
 
     const result = processWatermarkImageData(imageData, {
         alpha48,
-        alpha96
+        alpha96,
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.passCount, 1, `passCount=${result.meta.passCount}`);
@@ -211,7 +213,8 @@ test('processWatermarkImageData should remove strong white watermarks on near-bl
     const result = processWatermarkImageData(imageData, {
         alpha48,
         alpha96,
-        adaptiveMode: 'never'
+        adaptiveMode: 'never',
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.applied, true, `skipReason=${result.meta.skipReason}`);
@@ -758,7 +761,8 @@ test('processWatermarkImageData should keep visually balanced weak alpha when 20
         alpha48,
         alpha96,
         adaptiveMode: 'never',
-        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.applied, true, `skipReason=${result.meta.skipReason}`);
@@ -1078,7 +1082,8 @@ test('processWatermarkImageData should allow strong 2752x1536 new-margin alpha e
             '20260520': alpha96NewMargin
         },
         adaptiveMode: 'never',
-        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.applied, true, `skipReason=${result.meta.skipReason}`);
@@ -1163,7 +1168,8 @@ test('processWatermarkImageData should keep 1696x2518 portrait sample on the ful
         alpha48,
         alpha96,
         adaptiveMode: 'never',
-        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.applied, true, `skipReason=${result.meta.skipReason}`);
@@ -1201,7 +1207,8 @@ test('processWatermarkImageData should prefer strong 96px evidence over a weak 4
         alpha48,
         alpha96,
         adaptiveMode: 'never',
-        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+        getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size),
+        locatedAggressiveRemoval: false
     });
 
     assert.equal(result.meta.applied, true, `skipReason=${result.meta.skipReason}`);

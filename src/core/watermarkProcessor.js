@@ -44,6 +44,7 @@ const ALPHA_PARAMETER_GROUPS = Object.freeze([
     { name: 'weak-alpha-conservative', alphaGain: 0.55 }
 ]);
 const ALPHA_GAIN_CANDIDATES = ALPHA_PARAMETER_GROUPS.map((group) => group.alphaGain);
+const LOCATED_AGGRESSIVE_ALPHA_GAINS = Object.freeze([0.85, 1, 1.15, 1.3, 1.45, 1.7, 2, 2.4]);
 const ENABLE_VISUAL_POST_PROCESSING = false;
 const CATALOG_DARK_ALPHA_GAIN_CANDIDATES = Object.freeze([0.9, 0.85, 0.8, 0.95, 0.7, 0.6]);
 const STANDARD_ALPHA_PRIORITY_GAINS = ALPHA_PARAMETER_GROUPS
@@ -123,6 +124,12 @@ const PREVIEW_EDGE_CLEANUP_AGGRESSIVE_PRESETS = Object.freeze([
         maxSpatialDrift: 0.18,
         maxAcceptedSpatial: 0.18
     }
+]);
+const LOCATED_AGGRESSIVE_EDGE_PRESETS = Object.freeze([
+    { minAlpha: 0.004, maxAlpha: 0.99, radius: 2, strength: 0.85, outsideAlphaMax: 0.08 },
+    { minAlpha: 0.004, maxAlpha: 0.99, radius: 3, strength: 1.15, outsideAlphaMax: 0.12 },
+    { minAlpha: 0.004, maxAlpha: 0.99, radius: 5, strength: 1.45, outsideAlphaMax: 0.18 },
+    { minAlpha: 0.02, maxAlpha: 0.99, radius: 6, strength: 1.8, outsideAlphaMax: 0.25 }
 ]);
 const PREVIEW_BACKGROUND_CLEANUP_MAX_SIZE = 52;
 const PREVIEW_BACKGROUND_CLEANUP_MIN_RESIDUAL = 0.3;
@@ -819,7 +826,7 @@ function blendPreviewResidualEdge({
     for (let row = 0; row < regionSize; row++) {
         for (let col = 0; col < regionSize; col++) {
             const localIndex = row * regionSize + col;
-            const alpha = alphaMap[localIndex];
+            const alpha = Math.abs(alphaMap[localIndex]);
             if (alpha < minAlpha || alpha > maxAlpha) continue;
 
             let sumR = 0;
@@ -842,7 +849,7 @@ function blendPreviewResidualEdge({
 
                     let neighborAlpha = 0;
                     if (localY >= 0 && localX >= 0 && localY < regionSize && localX < regionSize) {
-                        neighborAlpha = alphaMap[localY * regionSize + localX];
+                        neighborAlpha = Math.abs(alphaMap[localY * regionSize + localX]);
                     }
                     if (neighborAlpha > outsideAlphaMax) continue;
 
@@ -1712,6 +1719,137 @@ function refinePreviewResidualEdge({
     return best;
 }
 
+function scoreLocatedAggressiveCandidate({
+    imageData,
+    alphaMap,
+    position
+}) {
+    const spatialScore = computeRegionSpatialCorrelation({
+        imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+        imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+    });
+    const nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    return {
+        spatialScore,
+        gradientScore,
+        nearBlackRatio,
+        cost: Math.abs(spatialScore) * 0.8 + Math.max(0, gradientScore) * 0.75
+    };
+}
+
+function pickLocatedAggressiveCandidate(currentBest, candidate) {
+    if (!candidate) return currentBest;
+    if (!currentBest || candidate.cost < currentBest.cost) return candidate;
+    return currentBest;
+}
+
+function buildLocatedAggressiveCandidate({
+    sourceImageData,
+    alphaMap,
+    position,
+    alphaGain,
+    repeatCount
+}) {
+    const candidate = cloneImageData(sourceImageData);
+    for (let passIndex = 0; passIndex < repeatCount; passIndex++) {
+        removeWatermark(candidate, alphaMap, position, { alphaGain });
+    }
+    return {
+        imageData: candidate,
+        alphaGain,
+        repeatCount,
+        ...scoreLocatedAggressiveCandidate({
+            imageData: candidate,
+            alphaMap,
+            position
+        })
+    };
+}
+
+function refineLocatedAggressiveRemoval({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain
+}) {
+    if (!position || !alphaMap || position.width !== position.height) return null;
+    const current = {
+        imageData: currentImageData,
+        alphaGain: currentAlphaGain,
+        repeatCount: 0,
+        spatialScore: currentSpatialScore,
+        gradientScore: currentGradientScore,
+        nearBlackRatio: calculateNearBlackRatio(currentImageData, position),
+        cost: Math.abs(currentSpatialScore) * 0.8 + Math.max(0, currentGradientScore) * 0.75
+    };
+    let best = current;
+    const gains = new Set([
+        currentAlphaGain,
+        ...LOCATED_AGGRESSIVE_ALPHA_GAINS
+    ].filter((value) => Number.isFinite(value) && value > 0));
+
+    for (const alphaGain of gains) {
+        for (const repeatCount of [1, 2]) {
+            best = pickLocatedAggressiveCandidate(
+                best,
+                buildLocatedAggressiveCandidate({
+                    sourceImageData: originalImageData,
+                    alphaMap,
+                    position,
+                    alphaGain,
+                    repeatCount
+                })
+            );
+        }
+    }
+
+    const edgeSources = [{
+        imageData: best.imageData,
+        alphaGain: best.alphaGain,
+        repeatCount: best.repeatCount
+    }];
+    if (best.imageData !== currentImageData) {
+        edgeSources.push({
+            imageData: currentImageData,
+            alphaGain: currentAlphaGain,
+            repeatCount: 0
+        });
+    }
+    for (const edgeSource of edgeSources) {
+        for (const preset of LOCATED_AGGRESSIVE_EDGE_PRESETS) {
+            const edgeCandidate = blendPreviewResidualEdge({
+                sourceImageData: edgeSource.imageData,
+                alphaMap,
+                position,
+                ...preset
+            });
+            best = pickLocatedAggressiveCandidate(best, {
+                imageData: edgeCandidate,
+                alphaGain: edgeSource.alphaGain,
+                repeatCount: edgeSource.repeatCount,
+                edgeCleanup: true,
+                ...scoreLocatedAggressiveCandidate({
+                    imageData: edgeCandidate,
+                    alphaMap,
+                    position
+                })
+            });
+        }
+    }
+
+    if (best.imageData === currentImageData) return null;
+    return best;
+}
+
 export function processWatermarkImageData(imageData, options = {}) {
     const totalStartedAt = nowMs();
     const debugTimingsEnabled = options.debugTimings === true;
@@ -2387,9 +2525,60 @@ export function processWatermarkImageData(imageData, options = {}) {
         suppressionGain = originalSpatialScore - finalProcessedSpatialScore;
         source = `${source}+small-preview-refine`;
     }
+
+    const locatedAggressiveStartedAt = nowMs();
+    if (options.locatedAggressiveRemoval !== false) {
+        const aggressiveRefined = refineLocatedAggressiveRemoval({
+            originalImageData,
+            currentImageData: finalImageData,
+            alphaMap,
+            position,
+            currentSpatialScore: finalProcessedSpatialScore,
+            currentGradientScore: finalProcessedGradientScore,
+            currentAlphaGain: alphaGain
+        });
+        if (aggressiveRefined) {
+            recordAlphaAdjustmentStage({
+                stage: 'located-aggressive-removal',
+                fromAlphaGain: alphaGain,
+                toAlphaGain: aggressiveRefined.alphaGain,
+                beforeSpatialScore: finalProcessedSpatialScore,
+                beforeGradientScore: finalProcessedGradientScore,
+                afterSpatialScore: aggressiveRefined.spatialScore,
+                afterGradientScore: aggressiveRefined.gradientScore,
+                suppressionGain: originalSpatialScore - aggressiveRefined.spatialScore,
+                cost: aggressiveRefined.cost,
+                allowSameAlphaGain: true
+            });
+            passes.push({
+                index: passes.length + 1,
+                beforeSpatialScore: finalProcessedSpatialScore,
+                beforeGradientScore: finalProcessedGradientScore,
+                afterSpatialScore: aggressiveRefined.spatialScore,
+                afterGradientScore: aggressiveRefined.gradientScore,
+                improvement: Math.abs(finalProcessedSpatialScore) - Math.abs(aggressiveRefined.spatialScore),
+                gradientDelta: aggressiveRefined.gradientScore - finalProcessedGradientScore,
+                nearBlackRatio: aggressiveRefined.nearBlackRatio
+            });
+            finalImageData = aggressiveRefined.imageData;
+            alphaGain = aggressiveRefined.alphaGain;
+            finalProcessedSpatialScore = aggressiveRefined.spatialScore;
+            finalProcessedGradientScore = aggressiveRefined.gradientScore;
+            suppressionGain = originalSpatialScore - finalProcessedSpatialScore;
+            passCount += Math.max(1, aggressiveRefined.repeatCount || 1);
+            attemptedPassCount += Math.max(1, aggressiveRefined.repeatCount || 1);
+            passStopReason = aggressiveRefined.edgeCleanup
+                ? 'located-aggressive-edge-cleanup'
+                : 'located-aggressive-alpha';
+            source = source.includes('+located-aggressive')
+                ? source
+                : `${source}+located-aggressive`;
+        }
+    }
     if (debugTimingsEnabled) {
         debugTimings.previewEdgeCleanupMs = previewEdgeCleanupElapsedMs;
         debugTimings.smallPreviewRefinementMs = nowMs() - smallPreviewRefinementStartedAt;
+        debugTimings.locatedAggressiveRemovalMs = nowMs() - locatedAggressiveStartedAt;
         debugTimings.totalMs = nowMs() - totalStartedAt;
     }
 

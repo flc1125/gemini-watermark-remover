@@ -118,6 +118,7 @@ export interface WatermarkMeta {
 export interface RemoveOptions {
     adaptiveMode?: 'auto' | 'always' | 'never' | 'off';
     aggressiveLocatedFallback?: boolean;
+    locatedAggressiveRemoval?: boolean;
     engine?: WatermarkEngine;
     alpha48?: Float32Array;
     alpha96?: Float32Array;
