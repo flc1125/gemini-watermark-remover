@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 async function readText(relativePath) {
   return readFile(new URL(`../../${relativePath}`, import.meta.url), 'utf8');
@@ -105,6 +108,53 @@ test('extension package should replace the local debug manifest with the officia
   assert.doesNotMatch(zipText, /Gemini Watermark Remover Local/);
   assert.doesNotMatch(zipText, /local test build/);
   assert.doesNotMatch(zipText, /version_name/);
+});
+
+test('extension package should be deterministic across repeated runs', async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'gwr-extension-package-'));
+  try {
+    const extensionDir = path.join(tempDir, 'dist', 'extension');
+    await mkdir(extensionDir, { recursive: true });
+    await writeFile(
+      path.join(extensionDir, 'manifest.json'),
+      `${JSON.stringify({
+        manifest_version: 3,
+        name: 'Gemini Watermark Remover Local',
+        short_name: 'GWR Local',
+        description: 'Local test build (local test build)',
+        version: '9.9.9',
+        version_name: '9.9.9+local.test',
+        action: {
+          default_title: 'Gemini Watermark Remover Local'
+        }
+      }, null, 2)}\n`
+    );
+    await writeFile(path.join(extensionDir, 'content-main.js'), 'console.log("fixture");\n');
+
+    const scriptPath = fileURLToPath(new URL('../../scripts/package-extension-release.js', import.meta.url));
+    const first = spawnSync(process.execPath, [scriptPath], {
+      cwd: tempDir,
+      encoding: 'utf8'
+    });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstLatest = JSON.parse(await readFile(path.join(tempDir, 'release', 'latest-extension.json'), 'utf8'));
+    const firstZip = await readFile(path.join(tempDir, 'release', firstLatest.file));
+
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+
+    const second = spawnSync(process.execPath, [scriptPath], {
+      cwd: tempDir,
+      encoding: 'utf8'
+    });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const secondLatest = JSON.parse(await readFile(path.join(tempDir, 'release', 'latest-extension.json'), 'utf8'));
+    const secondZip = await readFile(path.join(tempDir, 'release', secondLatest.file));
+
+    assert.equal(secondLatest.sha256, firstLatest.sha256);
+    assert.deepEqual(secondZip, firstZip);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('production build should preserve packaged extension release artifacts', async () => {

@@ -5,6 +5,7 @@ import path from 'node:path';
 const EXTENSION_DIR = path.resolve('dist/extension');
 const RELEASE_DIR = path.resolve('release');
 const PACKAGE_BASE_NAME = 'gemini-watermark-remover-extension';
+const ZIP_ENTRY_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
 
 const crcTable = new Uint32Array(256);
 for (let n = 0; n < 256; n += 1) {
@@ -48,7 +49,7 @@ function createZip(entries) {
   const localParts = [];
   const centralParts = [];
   let offset = 0;
-  const { dosDate, dosTime } = toDosDateTime();
+  const { dosDate, dosTime } = toDosDateTime(ZIP_ENTRY_TIMESTAMP);
 
   for (const entry of entries) {
     const fileName = Buffer.from(entry.name.replaceAll('\\', '/'));
