@@ -1,5 +1,17 @@
 # 更新日志
 
+## 1.0.26 - 2026-06-19
+
+### 水印移除
+
+- 为压在高对比文字上的 96px Gemini 图片水印新增保守的 text-overlap 处理路径，允许弱 alpha 清理水印，同时避免擦坏底下的文字笔画。
+- 修复 `20260618-2.png` bug 样本：现在会选择 canonical `96/64/64` 锚点，并走 `standard+gain+text-overlap+validated`，不再误判为 `no-watermark-detected`。
+
+### 发版
+
+- 将 Chrome 插件 zip 打包改为确定性输出，固定 zip entry 时间戳，确保相同内容重复运行 `pnpm package:extension` 会得到相同 hash。
+- 在 text-overlap 改动后重新验证外部 Gemini watermark 样本集和内置样本集；只有 `bug\20260618-2.png` 行为变化，raw visible、calibrated visible 和 metric-risk 数量没有增加。
+
 ## 1.0.25 - 2026-06-17
 
 ### 水印移除

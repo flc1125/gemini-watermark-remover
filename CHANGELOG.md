@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.26 - 2026-06-19
+
+### Watermark Removal
+
+- Added a conservative text-overlap path for 96px Gemini image watermarks that sit on top of high-contrast text, allowing weak-alpha cleanup without erasing the underlying lettering.
+- Fixed the `20260618-2.png` bug sample by selecting the canonical `96/64/64` anchor with `standard+gain+text-overlap+validated` instead of skipping it as `no-watermark-detected`.
+
+### Release
+
+- Made the Chrome extension zip packaging deterministic by fixing zip entry timestamps, so repeated `pnpm package:extension` runs produce the same hash for the same contents.
+- Re-verified the external Gemini watermark sample set and bundled sample set after the text-overlap change; only `bug\20260618-2.png` changed behavior, with no increase in raw visible, calibrated visible, or metric-risk counts.
+
 ## 1.0.25 - 2026-06-17
 
 ### Watermark Removal
