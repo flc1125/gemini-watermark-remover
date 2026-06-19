@@ -112,9 +112,15 @@ export async function exportFixedSamples(inputDir, { overwrite = true } = {}) {
     const alpha48 = calculateAlphaMap(await decodeImageDataInNode(bg48Path));
     const alpha96 = calculateAlphaMap(await decodeImageDataInNode(bg96Path));
     const alpha96Legacy = calculateAlphaMap(await decodeImageDataInNode(bg96LegacyPath));
-    const alphaResolver = (size) => {
+    const alphaResolver = (configOrSize) => {
+        const size = typeof configOrSize === 'object'
+            ? configOrSize.logoSize ?? configOrSize.size
+            : configOrSize;
+        const alphaVariant = typeof configOrSize === 'object' ? configOrSize.alphaVariant : null;
+
         if (size === '36-v2') return getEmbeddedAlphaMap('36-v2');
         if (size === 48) return alpha48;
+        if (size === 96 && alphaVariant === '20260520') return alpha96Legacy;
         if (size === 96) return alpha96;
         return interpolateAlphaMap(alpha96, 96, size);
     };

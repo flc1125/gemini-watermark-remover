@@ -1441,6 +1441,93 @@ test('processWatermarkImageData should cleanup residual edges on known 48px larg
     }
 });
 
+test('processWatermarkImageData should apply mid-core bias only after safe known 48px edge cleanup', async () => {
+    const alpha48 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_48.png')));
+    const alpha96 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_96.png')));
+    const samples = [
+        '4-3.png',
+        '9-16.png'
+    ];
+
+    for (const fileName of samples) {
+        const imageData = await decodeImageDataInNode(path.resolve('src/assets/samples', fileName));
+        const result = processWatermarkImageData(imageData, {
+            alpha48,
+            alpha96,
+            adaptiveMode: 'never',
+            getAlphaMap: (size) => size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size)
+        });
+
+        assert.ok(
+            String(result.meta.source).includes('+mid-core-bias'),
+            `${fileName} expected mid-core bias correction, source=${result.meta.source}`
+        );
+        assert.ok(
+            result.meta.alphaAdjustmentStages?.some((stage) => stage.stage === 'known-48-mid-core-bias-correction'),
+            `${fileName} expected mid-core bias stage, stages=${JSON.stringify(result.meta.alphaAdjustmentStages)}`
+        );
+        assert.ok(
+            result.meta.detection.residualVisibility.positiveHaloLum <= 8,
+            `${fileName} positiveHaloLum=${result.meta.detection.residualVisibility.positiveHaloLum}`
+        );
+        assert.ok(
+            Math.abs(result.meta.detection.processedSpatialScore) <= 0.12,
+            `${fileName} spatial residual=${result.meta.detection.processedSpatialScore}`
+        );
+        assert.ok(
+            result.meta.detection.processedGradientScore <= 0.05,
+            `${fileName} gradient residual=${result.meta.detection.processedGradientScore}`
+        );
+    }
+});
+
+test('processWatermarkImageData should not apply mid-core bias outside the known 48px edge-cleanup gate', async () => {
+    const alpha48 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_48.png')));
+    const alpha96 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_96.png')));
+    const alpha36V2 = getEmbeddedAlphaMap('36-v2');
+    const cases = [
+        {
+            fileName: 'v2-36-fixture',
+            imagePath: path.resolve('tests/fixtures/gemini-v2-36-small-watermark.png')
+        },
+        {
+            fileName: '1-8.png',
+            imagePath: path.resolve('src/assets/samples/1-8.png')
+        },
+        {
+            fileName: '20260607-2.png',
+            imagePath: path.resolve('src/assets/samples/20260607-2.png')
+        },
+        {
+            fileName: '20260616.png',
+            imagePath: path.resolve('src/assets/samples/20260616.png')
+        }
+    ];
+
+    for (const item of cases) {
+        const imageData = await decodeImageDataInNode(item.imagePath);
+        const result = processWatermarkImageData(imageData, {
+            alpha48,
+            alpha96,
+            adaptiveMode: 'never',
+            getAlphaMap: (size) => size === '36-v2'
+                ? alpha36V2
+                : (size === 48 ? alpha48 : interpolateAlphaMap(alpha96, 96, size))
+        });
+
+        assert.equal(
+            String(result.meta.source).includes('+mid-core-bias'),
+            false,
+            `${item.fileName} should not use mid-core bias, source=${result.meta.source}`
+        );
+        assert.equal(
+            result.meta.alphaAdjustmentStages?.some((stage) => stage.stage === 'known-48-mid-core-bias-correction') ?? false,
+            false,
+            `${item.fileName} should not record mid-core bias stage, stages=${JSON.stringify(result.meta.alphaAdjustmentStages)}`
+        );
+    }
+});
+
 test('processWatermarkImageData should flat-fill residual edges only on smooth known 48px backgrounds', async () => {
     const alpha48 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_48.png')));
     const alpha96 = calculateAlphaMap(await decodeImageDataInNode(path.resolve('src/assets/bg_96.png')));

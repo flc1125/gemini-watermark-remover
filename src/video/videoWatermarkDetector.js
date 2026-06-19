@@ -17,6 +17,10 @@ const VIDEO_ALPHA_EDGE_BOOST = 0.045;
 const VIDEO_INSET_ALPHA_EDGE_BOOST = 0.035;
 const ALPHA_REFINEMENT_ROUNDS = 5;
 const LOGO_VALUE = 255;
+const AUTO_ALPHA_SHAPE_MIN_SIZE = 40;
+const AUTO_ALPHA_SHAPE_MIN_IMPROVEMENT = 0.04;
+const AUTO_ALPHA_SHAPE_MIN_RELATIVE_IMPROVEMENT = 0.08;
+const AUTO_ALPHA_SHAPE_MAX_EDGE_BOOST = 0.12;
 
 function normalizeVideoAlphaProfile(profile) {
     if (profile === undefined || profile === null || profile === '') {
@@ -109,6 +113,308 @@ function getVideoAlphaMap(size, options = {}) {
         ? new Float32Array(alphaSource)
         : resizeAlphaMapArea(alphaSource, sourceSize, size);
     return applyVideoAlphaShapeOptions(enhanceVideoAlphaEdges(resized, size, edgeBoost), options);
+}
+
+function hasExplicitAlphaShapeOptions(options = {}) {
+    return (
+        options.profile !== undefined ||
+        options.alphaProfile !== undefined ||
+        options.edgeBoost !== undefined ||
+        options.lowAlphaScale !== undefined ||
+        options.bodyAlphaScale !== undefined ||
+        options.localLowAlphaScale !== undefined ||
+        options.localBodyAlphaScale !== undefined ||
+        options.localRegion !== undefined
+    );
+}
+
+function clampChannel(value) {
+    if (value <= 0) return 0;
+    if (value >= 255) return 255;
+    return Math.round(value);
+}
+
+function createRestoredVideoRoi(imageData, position, alphaMap, alphaGain) {
+    const width = position.width ?? position.size;
+    const height = position.height ?? position.size;
+    const out = new Uint8ClampedArray(width * height * 4);
+    let deltaSum = 0;
+    let changed = 0;
+    let total = 0;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const sourceIdx = ((position.y + y) * imageData.width + position.x + x) * 4;
+            const targetIdx = (y * width + x) * 4;
+            const rawAlpha = alphaMap[y * width + x] || 0;
+            const alpha = rawAlpha > 0.025
+                ? Math.min(rawAlpha * alphaGain, 0.99)
+                : 0;
+
+            if (alpha <= 0) {
+                out[targetIdx] = imageData.data[sourceIdx];
+                out[targetIdx + 1] = imageData.data[sourceIdx + 1];
+                out[targetIdx + 2] = imageData.data[sourceIdx + 2];
+                out[targetIdx + 3] = imageData.data[sourceIdx + 3] ?? 255;
+            } else {
+                const oneMinusAlpha = 1 - alpha;
+                out[targetIdx] = clampChannel((imageData.data[sourceIdx] - alpha * LOGO_VALUE) / oneMinusAlpha);
+                out[targetIdx + 1] = clampChannel((imageData.data[sourceIdx + 1] - alpha * LOGO_VALUE) / oneMinusAlpha);
+                out[targetIdx + 2] = clampChannel((imageData.data[sourceIdx + 2] - alpha * LOGO_VALUE) / oneMinusAlpha);
+                out[targetIdx + 3] = imageData.data[sourceIdx + 3] ?? 255;
+            }
+
+            for (let channel = 0; channel < 3; channel++) {
+                const delta = Math.abs(out[targetIdx + channel] - imageData.data[sourceIdx + channel]);
+                deltaSum += delta;
+                if (delta > 1) changed++;
+                total++;
+            }
+        }
+    }
+
+    return {
+        imageData: {
+            width,
+            height,
+            data: out
+        },
+        meanAbsDelta: total > 0 ? deltaSum / total : 0,
+        changedRatio: total > 0 ? changed / total : 0
+    };
+}
+
+function buildAutoAlphaShapeOptions(candidate, alphaMapOptions = {}) {
+    const defaultEdgeBoost = resolveVideoAlphaEdgeBoost(candidate);
+    return [
+        {
+            name: 'default',
+            profile: normalizeVideoAlphaProfile(alphaMapOptions.profile ?? alphaMapOptions.alphaProfile),
+            edgeBoost: Number.isFinite(alphaMapOptions.edgeBoost)
+                ? alphaMapOptions.edgeBoost
+                : defaultEdgeBoost,
+            options: {}
+        },
+        {
+            name: `96-edge${defaultEdgeBoost.toFixed(3)}`,
+            profile: '96',
+            edgeBoost: defaultEdgeBoost,
+            options: {
+                alphaProfile: '96',
+                edgeBoost: defaultEdgeBoost
+            }
+        },
+        ...[0.08, 0.10, AUTO_ALPHA_SHAPE_MAX_EDGE_BOOST].map((edgeBoost) => ({
+            name: `96-edge${edgeBoost.toFixed(3)}`,
+            profile: '96',
+            edgeBoost,
+            options: {
+                alphaProfile: '96',
+                edgeBoost
+            }
+        }))
+    ];
+}
+
+function summarizeAutoAlphaShapeScores(scores) {
+    if (!scores.length) {
+        return {
+            frames: 0,
+            meanSpatial: 0,
+            meanGradient: 0,
+            meanConfidence: 1,
+            maxConfidence: 1,
+            meanAbsDelta: 0,
+            changedRatio: 0
+        };
+    }
+
+    const sum = scores.reduce((acc, score) => {
+        acc.spatial += score.spatial;
+        acc.gradient += score.gradient;
+        acc.confidence += score.confidence;
+        acc.maxConfidence = Math.max(acc.maxConfidence, score.confidence);
+        acc.meanAbsDelta += score.meanAbsDelta;
+        acc.changedRatio += score.changedRatio;
+        return acc;
+    }, {
+        spatial: 0,
+        gradient: 0,
+        confidence: 0,
+        maxConfidence: 0,
+        meanAbsDelta: 0,
+        changedRatio: 0
+    });
+
+    return {
+        frames: scores.length,
+        meanSpatial: sum.spatial / scores.length,
+        meanGradient: sum.gradient / scores.length,
+        meanConfidence: sum.confidence / scores.length,
+        maxConfidence: sum.maxConfidence,
+        meanAbsDelta: sum.meanAbsDelta / scores.length,
+        changedRatio: sum.changedRatio / scores.length
+    };
+}
+
+function rankAutoAlphaShapeEvaluation(evaluation, index) {
+    const deltaPenalty = Math.max(0, evaluation.meanAbsDelta - 32) * 0.003;
+    const coveragePenalty = Math.max(0, evaluation.changedRatio - 0.92) * 0.15;
+    return evaluation.meanConfidence + deltaPenalty + coveragePenalty + index * 0.001;
+}
+
+function evaluateAutoAlphaShapeOption({
+    frames,
+    position,
+    candidate,
+    frameWinners,
+    alphaMapOptions,
+    option,
+    scoreAlphaMap
+}) {
+    const alphaMap = getVideoAlphaMap(candidate.size, {
+        ...alphaMapOptions,
+        ...option.options,
+        candidate
+    });
+    const alphaSeed = estimateAlphaSeedFromFrames(
+        frames,
+        position,
+        alphaMap,
+        frameWinners,
+        candidate.id
+    );
+    const winnerByTimestamp = new Map(frameWinners.map((winner) => [winner.timestamp, winner]));
+    const scores = [];
+
+    for (const frame of frames) {
+        const winner = winnerByTimestamp.get(frame.timestamp);
+        if (winner && winner.candidateId !== candidate.id && winner.confidence > 0.08) continue;
+
+        const restored = createRestoredVideoRoi(
+            frame.imageData,
+            position,
+            alphaMap,
+            alphaSeed.seedGain
+        );
+        const residual = scoreVideoWatermarkFrame(
+            restored.imageData,
+            { x: 0, y: 0, width: position.width, height: position.height },
+            scoreAlphaMap
+        );
+        scores.push({
+            ...residual,
+            meanAbsDelta: restored.meanAbsDelta,
+            changedRatio: restored.changedRatio
+        });
+    }
+
+    return {
+        ...option,
+        alphaMap,
+        alphaSeed,
+        ...summarizeAutoAlphaShapeScores(scores)
+    };
+}
+
+function shouldAutoSelectAlphaShape({ candidate, best, voteRatio, alphaMapOptions }) {
+    if (alphaMapOptions?.autoAlphaProfile === false) return false;
+    if (hasExplicitAlphaShapeOptions(alphaMapOptions)) return false;
+    if (!candidate || !best) return false;
+    if ((candidate.size ?? candidate.width ?? 0) < AUTO_ALPHA_SHAPE_MIN_SIZE) return false;
+    if (voteRatio < 0.6) return false;
+    return best.meanConfidence >= DEFAULT_MIN_CONFIDENCE;
+}
+
+function selectVideoAlphaShapeForDetection({
+    frames,
+    position,
+    candidate,
+    best,
+    voteRatio,
+    frameWinners,
+    alphaMapOptions = {}
+}) {
+    const fallbackAlphaMap = getVideoAlphaMap(candidate.size, { ...alphaMapOptions, candidate });
+    const fallbackAlphaSeed = estimateAlphaSeedFromFrames(
+        frames,
+        position,
+        fallbackAlphaMap,
+        frameWinners,
+        candidate.id
+    );
+
+    if (!shouldAutoSelectAlphaShape({ candidate, best, voteRatio, alphaMapOptions })) {
+        return {
+            alphaMap: fallbackAlphaMap,
+            alphaSeed: fallbackAlphaSeed,
+            alphaShape: null
+        };
+    }
+
+    const scoreAlphaMap = fallbackAlphaMap;
+    const evaluations = buildAutoAlphaShapeOptions(candidate, alphaMapOptions)
+        .map((option, index) => ({
+            ...evaluateAutoAlphaShapeOption({
+                frames,
+                position,
+                candidate,
+                frameWinners,
+                alphaMapOptions,
+                option,
+                scoreAlphaMap
+            }),
+            priorityIndex: index
+        }))
+        .sort((a, b) => {
+            const aRank = rankAutoAlphaShapeEvaluation(a, a.priorityIndex);
+            const bRank = rankAutoAlphaShapeEvaluation(b, b.priorityIndex);
+            return aRank - bRank;
+        });
+    const baseline = evaluations.find((evaluation) => evaluation.name === 'default') || evaluations[0];
+    const selected = evaluations[0] || baseline;
+    const absoluteImprovement = baseline.meanConfidence - selected.meanConfidence;
+    const relativeImprovement = baseline.meanConfidence > 0
+        ? absoluteImprovement / baseline.meanConfidence
+        : 0;
+    const accepted =
+        selected !== baseline &&
+        absoluteImprovement >= AUTO_ALPHA_SHAPE_MIN_IMPROVEMENT &&
+        relativeImprovement >= AUTO_ALPHA_SHAPE_MIN_RELATIVE_IMPROVEMENT;
+    const finalSelection = accepted ? selected : baseline;
+
+    return {
+        alphaMap: finalSelection.alphaMap,
+        alphaSeed: finalSelection.alphaSeed,
+        alphaShape: {
+            accepted,
+            baseline: {
+                name: baseline.name,
+                profile: baseline.profile,
+                edgeBoost: baseline.edgeBoost,
+                meanConfidence: baseline.meanConfidence,
+                meanAbsDelta: baseline.meanAbsDelta,
+                changedRatio: baseline.changedRatio
+            },
+            selected: {
+                name: finalSelection.name,
+                profile: finalSelection.profile,
+                edgeBoost: finalSelection.edgeBoost,
+                meanConfidence: finalSelection.meanConfidence,
+                meanAbsDelta: finalSelection.meanAbsDelta,
+                changedRatio: finalSelection.changedRatio,
+                alphaSeed: finalSelection.alphaSeed
+            },
+            candidates: evaluations.map((evaluation) => ({
+                name: evaluation.name,
+                profile: evaluation.profile,
+                edgeBoost: evaluation.edgeBoost,
+                meanConfidence: evaluation.meanConfidence,
+                meanAbsDelta: evaluation.meanAbsDelta,
+                changedRatio: evaluation.changedRatio
+            }))
+        }
+    };
 }
 
 function applyVideoAlphaShapeOptions(alphaMap, options = {}) {
@@ -823,7 +1129,6 @@ export function detectDiamondVideoWatermarkFromFrames({
         });
 
     const best = summaries[0];
-    const alphaMap = getVideoAlphaMap(best.candidate.size, { ...alphaMapOptions, candidate: best.candidate });
     const voteRatio = frames.length > 0 ? best.votes / frames.length : 0;
     const isConfident =
         best.meanConfidence >= minConfidence &&
@@ -834,13 +1139,16 @@ export function detectDiamondVideoWatermarkFromFrames({
         width: best.candidate.size,
         height: best.candidate.size
     };
-    const alphaSeed = estimateAlphaSeedFromFrames(
+    const alphaSelection = selectVideoAlphaShapeForDetection({
         frames,
         position,
-        alphaMap,
+        candidate: best.candidate,
+        best,
+        voteRatio,
         frameWinners,
-        best.candidate.id
-    );
+        alphaMapOptions
+    });
+    const { alphaMap, alphaSeed } = alphaSelection;
 
     return {
         watermarkKind: 'diamond',
@@ -853,6 +1161,7 @@ export function detectDiamondVideoWatermarkFromFrames({
             frameCount: frames.length,
             minConfidence,
             alphaSeed,
+            alphaShape: alphaSelection.alphaShape,
             best: {
                 candidateId: best.candidate.id,
                 label: best.candidate.label,
@@ -944,7 +1253,6 @@ export async function detectDiamondVideoWatermarkFromFramesAsync({
         });
 
     const best = summaries[0];
-    const alphaMap = getVideoAlphaMap(best.candidate.size, { ...alphaMapOptions, candidate: best.candidate });
     const voteRatio = frames.length > 0 ? best.votes / frames.length : 0;
     const isConfident =
         best.meanConfidence >= minConfidence &&
@@ -955,13 +1263,16 @@ export async function detectDiamondVideoWatermarkFromFramesAsync({
         width: best.candidate.size,
         height: best.candidate.size
     };
-    const alphaSeed = estimateAlphaSeedFromFrames(
+    const alphaSelection = selectVideoAlphaShapeForDetection({
         frames,
         position,
-        alphaMap,
+        candidate: best.candidate,
+        best,
+        voteRatio,
         frameWinners,
-        best.candidate.id
-    );
+        alphaMapOptions
+    });
+    const { alphaMap, alphaSeed } = alphaSelection;
 
     return {
         watermarkKind: 'diamond',
@@ -974,6 +1285,7 @@ export async function detectDiamondVideoWatermarkFromFramesAsync({
             frameCount: frames.length,
             minConfidence,
             alphaSeed,
+            alphaShape: alphaSelection.alphaShape,
             best: {
                 candidateId: best.candidate.id,
                 label: best.candidate.label,

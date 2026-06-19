@@ -19,6 +19,7 @@ const ROOT_DIR = process.cwd();
 const SAMPLE_DIR = path.resolve(ROOT_DIR, 'src/assets/samples');
 const BG48_PATH = path.resolve(ROOT_DIR, 'src/assets/bg_48.png');
 const BG96_PATH = path.resolve(ROOT_DIR, 'src/assets/bg_96.png');
+const BG96_20260520_PATH = path.resolve(ROOT_DIR, 'src/assets/bg_96_20260520.png');
 const IMAGE_EXTENSIONS = new Set(['.png', '.webp', '.jpg', '.jpeg']);
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -204,10 +205,11 @@ test('sample assets should match local fix-directory baselines when they are pre
 
         const bg48Url = await readImageDataUrl(BG48_PATH);
         const bg96Url = await readImageDataUrl(BG96_PATH);
+        const bg96_20260520Url = await readImageDataUrl(BG96_20260520_PATH);
         const results = [];
         for (let start = 0; start < payload.length; start += PAGE_EVAL_BATCH_SIZE) {
             const batch = payload.slice(start, start + PAGE_EVAL_BATCH_SIZE);
-            const batchResults = await page.evaluate(async ({ baseUrl, bg48Url, bg96Url, payload }) => {
+            const batchResults = await page.evaluate(async ({ baseUrl, bg48Url, bg96Url, bg96_20260520Url, payload }) => {
                 const { calculateAlphaMap } = await import(`${baseUrl}/src/core/alphaMap.js`);
                 const { interpolateAlphaMap } = await import(`${baseUrl}/src/core/adaptiveDetector.js`);
                 const { processWatermarkImageData } = await import(`${baseUrl}/src/core/watermarkProcessor.js`);
@@ -289,6 +291,18 @@ test('sample assets should match local fix-directory baselines when they are pre
 
                 const alpha48 = calculateAlphaMap(await decodeImageData(bg48Url));
                 const alpha96 = calculateAlphaMap(await decodeImageData(bg96Url));
+                const alpha96_20260520 = calculateAlphaMap(await decodeImageData(bg96_20260520Url));
+                const resolveAlphaMap = (configOrSize) => {
+                    const size = typeof configOrSize === 'object'
+                        ? configOrSize.logoSize ?? configOrSize.size
+                        : configOrSize;
+                    const alphaVariant = typeof configOrSize === 'object' ? configOrSize.alphaVariant : null;
+
+                    if (size === 48) return alpha48;
+                    if (size === 96 && alphaVariant === '20260520') return alpha96_20260520;
+                    if (size === 96) return alpha96;
+                    return interpolateAlphaMap(alpha96, 96, size);
+                };
                 const results = [];
 
                 for (const item of payload) {
@@ -297,7 +311,10 @@ test('sample assets should match local fix-directory baselines when they are pre
                     const result = processWatermarkImageData(imageData, {
                         alpha48,
                         alpha96,
-                        getAlphaMap: (size) => size === 48 ? alpha48 : size === 96 ? alpha96 : interpolateAlphaMap(alpha96, 96, size)
+                        alpha96Variants: {
+                            '20260520': alpha96_20260520
+                        },
+                        getAlphaMap: resolveAlphaMap
                     });
                     const actualImageData = item.compareMode === 'raw'
                         ? result.imageData
@@ -319,6 +336,7 @@ test('sample assets should match local fix-directory baselines when they are pre
                 baseUrl,
                 bg48Url,
                 bg96Url,
+                bg96_20260520Url,
                 payload: batch
             });
             results.push(...batchResults);

@@ -103,6 +103,13 @@ const KNOWN_48_LUMA_EDGE_PRESETS = Object.freeze([
     { name: 'mid', minAlpha: 0.012, maxAlpha: 0.7, referenceAlphaMax: 0.04, radius: 3, strength: 0.42, colorSigma: 34, maxDelta: 32 },
     { name: 'wide', minAlpha: 0.012, maxAlpha: 0.7, referenceAlphaMax: 0.055, radius: 4, strength: 0.48, colorSigma: 34, maxDelta: 40 }
 ]);
+const KNOWN_48_MID_CORE_BIAS_STRENGTH = 0.25;
+const KNOWN_48_MID_CORE_BIAS_MIN_HALO = 8;
+const KNOWN_48_MID_CORE_BIAS_MIN_HALO_REDUCTION = 0.5;
+const KNOWN_48_MID_CORE_BIAS_MAX_GRADIENT_DRIFT = 0.01;
+const KNOWN_48_MID_CORE_BIAS_MAX_SPATIAL_DRIFT = 0.02;
+const KNOWN_48_MID_CORE_BIAS_MAX_ARTIFACT_DRIFT = 0.001;
+const KNOWN_48_MID_CORE_BIAS_MAX_NEW_CLIP_DRIFT = 0.001;
 const PREVIEW_EDGE_CLEANUP_SPATIAL_THRESHOLD = 0.08;
 const PREVIEW_EDGE_CLEANUP_GRADIENT_THRESHOLD = 0.1;
 const PREVIEW_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT = 0.03;
@@ -1475,6 +1482,171 @@ function refineKnown48LumaEdgeResidual({
     }
 
     return best;
+}
+
+function alphaBandBiasWeight(alpha, {
+    outerMinAlpha = 0.12,
+    innerMinAlpha = 0.18,
+    innerMaxAlpha = 0.35,
+    outerMaxAlpha = 0.42
+} = {}) {
+    if (alpha < outerMinAlpha || alpha > outerMaxAlpha) return 0;
+    if (alpha >= innerMinAlpha && alpha <= innerMaxAlpha) return 1;
+    if (alpha < innerMinAlpha) {
+        return smoothstep(outerMinAlpha, innerMinAlpha, alpha);
+    }
+    return 1 - smoothstep(innerMaxAlpha, outerMaxAlpha, alpha);
+}
+
+function smoothstep(edge0, edge1, value) {
+    if (edge0 === edge1) return value >= edge1 ? 1 : 0;
+    const t = clamp01((value - edge0) / (edge1 - edge0));
+    return t * t * (3 - 2 * t);
+}
+
+function applyMidCoreBiasCorrection({ sourceImageData, alphaMap, position, positiveHaloLum, strength }) {
+    const candidate = cloneImageData(sourceImageData);
+    const bias = Math.max(0, positiveHaloLum) * strength;
+    if (bias <= 0) return candidate;
+
+    for (let row = 0; row < position.height; row++) {
+        for (let col = 0; col < position.width; col++) {
+            const localIndex = row * position.width + col;
+            const alpha = alphaMap[localIndex] ?? 0;
+            const weight = alphaBandBiasWeight(alpha);
+            if (weight <= 0) continue;
+
+            const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+            const delta = bias * weight;
+            candidate.data[pixelIndex] = clampChannel(candidate.data[pixelIndex] - delta);
+            candidate.data[pixelIndex + 1] = clampChannel(candidate.data[pixelIndex + 1] - delta);
+            candidate.data[pixelIndex + 2] = clampChannel(candidate.data[pixelIndex + 2] - delta);
+        }
+    }
+
+    return candidate;
+}
+
+function positiveBandDelta(imageData, position, alphaMap, minAlpha, maxAlpha) {
+    const halo = assessAlphaBandHalo({
+        imageData,
+        position,
+        alphaMap,
+        minAlpha,
+        maxAlpha,
+        outsideAlphaMax: 0.012,
+        outerMargin: 4
+    });
+    return halo.positiveDeltaLum ?? 0;
+}
+
+function hasDominantMidCoreHalo({ imageData, position, alphaMap }) {
+    const edge = positiveBandDelta(imageData, position, alphaMap, 0.02, 0.12);
+    const midCore = positiveBandDelta(imageData, position, alphaMap, 0.18, 0.35);
+    const highCore = positiveBandDelta(imageData, position, alphaMap, 0.35, 0.78);
+    return midCore > edge && midCore > highCore;
+}
+
+function refineKnown48MidCoreBiasResidual({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    source,
+    alphaGain,
+    baselineSpatialScore,
+    baselineGradientScore
+}) {
+    if (
+        position?.width < KNOWN_48_EDGE_CLEANUP_MIN_SIZE ||
+        position?.width > KNOWN_48_EDGE_CLEANUP_MAX_SIZE ||
+        typeof source !== 'string' ||
+        !source.includes('edge-cleanup') ||
+        source.includes('v2-small-edge-cleanup')
+    ) {
+        return null;
+    }
+
+    const baselineVisibility = assessWatermarkResidualVisibility({
+        imageData: currentImageData,
+        position,
+        alphaMap
+    });
+    if (
+        baselineVisibility?.visiblePositiveHalo !== true ||
+        (baselineVisibility.positiveHaloLum ?? 0) < KNOWN_48_MID_CORE_BIAS_MIN_HALO ||
+        !hasDominantMidCoreHalo({ imageData: currentImageData, position, alphaMap })
+    ) {
+        return null;
+    }
+
+    const baselineArtifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData: currentImageData,
+        alphaMap,
+        position,
+        alphaGain
+    });
+    const baselineArtifactCost = Number(baselineArtifacts?.visualArtifactCost);
+    if (!Number.isFinite(baselineArtifactCost)) return null;
+
+    const candidate = applyMidCoreBiasCorrection({
+        sourceImageData: currentImageData,
+        alphaMap,
+        position,
+        positiveHaloLum: baselineVisibility.positiveHaloLum,
+        strength: KNOWN_48_MID_CORE_BIAS_STRENGTH
+    });
+    const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+        imageData: candidate,
+        position,
+        alphaMap
+    });
+    const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData: candidate,
+        alphaMap,
+        position,
+        alphaGain
+    });
+    const artifactCost = Number(artifacts?.visualArtifactCost);
+    if (!Number.isFinite(artifactCost)) return null;
+
+    const haloReduction = (baselineVisibility.positiveHaloLum ?? 0) - (residualVisibility?.positiveHaloLum ?? 0);
+    const gradientDrift = gradientScore - baselineGradientScore;
+    const spatialDrift = Math.abs(spatialScore) - Math.abs(baselineSpatialScore);
+    const artifactDrift = artifactCost - baselineArtifactCost;
+    const newClipDrift = (artifacts?.newlyClippedRatio ?? 0) - (baselineArtifacts?.newlyClippedRatio ?? 0);
+    if (
+        haloReduction < KNOWN_48_MID_CORE_BIAS_MIN_HALO_REDUCTION ||
+        gradientDrift > KNOWN_48_MID_CORE_BIAS_MAX_GRADIENT_DRIFT ||
+        spatialDrift > KNOWN_48_MID_CORE_BIAS_MAX_SPATIAL_DRIFT ||
+        artifactDrift > KNOWN_48_MID_CORE_BIAS_MAX_ARTIFACT_DRIFT ||
+        newClipDrift > KNOWN_48_MID_CORE_BIAS_MAX_NEW_CLIP_DRIFT
+    ) {
+        return null;
+    }
+
+    return {
+        imageData: candidate,
+        spatialScore,
+        gradientScore,
+        residualVisibility,
+        cost: artifactCost,
+        haloReduction,
+        artifactDrift,
+        newClipDrift
+    };
 }
 
 function expandPosition(position, imageData, pad) {
@@ -4553,6 +4725,37 @@ export function processWatermarkImageData(imageData, options = {}) {
         suppressionGain = originalSpatialScore - finalProcessedSpatialScore;
         source = `${source}+quantized-body-correction`;
     }
+
+    const midCoreBiasStartedAt = nowMs();
+    const midCoreBiasCorrection = refineKnown48MidCoreBiasResidual({
+        originalImageData,
+        currentImageData: finalImageData,
+        alphaMap,
+        position,
+        source,
+        alphaGain,
+        baselineSpatialScore: finalProcessedSpatialScore,
+        baselineGradientScore: finalProcessedGradientScore
+    });
+    if (midCoreBiasCorrection) {
+        recordAlphaAdjustmentStage({
+            stage: 'known-48-mid-core-bias-correction',
+            fromAlphaGain: alphaGain,
+            toAlphaGain: alphaGain,
+            beforeSpatialScore: finalProcessedSpatialScore,
+            beforeGradientScore: finalProcessedGradientScore,
+            afterSpatialScore: midCoreBiasCorrection.spatialScore,
+            afterGradientScore: midCoreBiasCorrection.gradientScore,
+            suppressionGain: originalSpatialScore - midCoreBiasCorrection.spatialScore,
+            cost: midCoreBiasCorrection.cost,
+            allowSameAlphaGain: true
+        });
+        finalImageData = midCoreBiasCorrection.imageData;
+        finalProcessedSpatialScore = midCoreBiasCorrection.spatialScore;
+        finalProcessedGradientScore = midCoreBiasCorrection.gradientScore;
+        suppressionGain = originalSpatialScore - finalProcessedSpatialScore;
+        source = `${source}+mid-core-bias`;
+    }
     if (debugTimingsEnabled) {
         debugTimings.previewEdgeCleanupMs = previewEdgeCleanupElapsedMs;
         debugTimings.smallPreviewRefinementMs = nowMs() - smallPreviewRefinementStartedAt;
@@ -4562,7 +4765,8 @@ export function processWatermarkImageData(imageData, options = {}) {
         debugTimings.powerProfileRescueMs = boundaryRepairRescueStartedAt - powerProfileRescueStartedAt;
         debugTimings.boundaryRepairRescueMs = darkHaloRescueStartedAt - boundaryRepairRescueStartedAt;
         debugTimings.darkHaloRescueMs = quantizedBodyCorrectionStartedAt - darkHaloRescueStartedAt;
-        debugTimings.quantizedBodyCorrectionMs = nowMs() - quantizedBodyCorrectionStartedAt;
+        debugTimings.quantizedBodyCorrectionMs = midCoreBiasStartedAt - quantizedBodyCorrectionStartedAt;
+        debugTimings.midCoreBiasCorrectionMs = nowMs() - midCoreBiasStartedAt;
         debugTimings.totalMs = nowMs() - totalStartedAt;
     }
 

@@ -107,6 +107,49 @@ test('getVideoAlphaMap should support experimental embedded alpha profile select
     assert.ok(legacyMax > defaultMax, { defaultMax, legacyMax });
 });
 
+test('detectVideoWatermarkFromFrames should auto-select a legacy alpha shape for relocated portrait frames', () => {
+    const width = 720;
+    const height = 1280;
+    const candidates = resolveVideoWatermarkCandidates(width, height);
+    const target = candidates.find((candidate) => candidate.id === 'veo-720x1280-portrait-relocated-48');
+    const legacyAlpha = getVideoAlphaMap(target.size, {
+        candidate: target,
+        alphaProfile: '96',
+        edgeBoost: 0.12
+    });
+    const frames = [];
+
+    for (let i = 0; i < 3; i++) {
+        const imageData = createPatternImageData(width, height);
+        applyWhiteWatermark(imageData, legacyAlpha, {
+            x: target.x,
+            y: target.y,
+            width: target.size,
+            height: target.size
+        });
+        frames.push({ timestamp: i / 24, imageData });
+    }
+
+    const result = detectVideoWatermarkFromFrames({
+        frames,
+        width,
+        height,
+        candidates: [target],
+        minConfidence: 0.02
+    });
+
+    assert.equal(result.candidate.id, target.id);
+    assert.equal(result.summary.alphaShape.accepted, true);
+    assert.equal(result.summary.alphaShape.selected.profile, '96');
+    assert.notEqual(result.summary.alphaShape.selected.name, 'default');
+    assert.ok(result.summary.alphaShape.selected.edgeBoost <= 0.12);
+    assert.deepEqual(result.alphaMap, getVideoAlphaMap(target.size, {
+        candidate: target,
+        alphaProfile: '96',
+        edgeBoost: result.summary.alphaShape.selected.edgeBoost
+    }));
+});
+
 test('getVideoAlphaMap should support experimental local body scaling', () => {
     const [, inset] = resolveVideoWatermarkCandidates(1920, 1080);
     const currentAlpha = getVideoAlphaMap(inset.size, { candidate: inset });
