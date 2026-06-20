@@ -70,6 +70,14 @@ Expected result:
 - submit the Chrome extension package to Chrome Web Store, or confirm the already-approved listing is serving the intended version
 - publish the sdk package only if this release includes package-facing changes
 
+## Downstream Dependency Sync
+
+- Check downstream projects for a direct package dependency before bumping them:
+  `rg -n "@pilio/gemini-watermark-remover" --glob package.json --glob pnpm-lock.yaml`
+- Do not treat Pilio task routes, processor keys, i18n copy, tests, or docs mentioning `gemini-watermark-remover` as evidence that the npm SDK must be bumped.
+- `D:\Project\pilio` currently uses the backend Gemini watermark processor path and should not need an `@pilio/gemini-watermark-remover` package bump unless a direct dependency is reintroduced.
+- `D:\Project\geminiwatermarkremover.io` may still consume the npm SDK for its local browser tool. If the npm package was published for the release, update that site's `package.json` / `pnpm-lock.yaml`, then rebuild, test, and deploy the site.
+
 Example GitHub Release command:
 
 ```bash
@@ -93,15 +101,16 @@ After the GitHub Release is published:
 1. Run `pnpm run userscript:build` in the website project.
    - This rebuilds this upstream repository.
    - It copies `dist/userscript/gemini-watermark-remover.user.js` to `public/userscript/gemini-watermark-remover.user.js`.
-2. Download the exact Chrome extension fallback assets from the GitHub Release into the website project:
+2. If the npm SDK was published for this release and the website still directly depends on it, update `@pilio/gemini-watermark-remover` to the released version and refresh `pnpm-lock.yaml`.
+3. Download the exact Chrome extension fallback assets from the GitHub Release into the website project:
    - `gemini-watermark-remover-extension-v<version>.zip`
    - `gemini-watermark-remover-extension-v<version>.zip.sha256.txt`
    - `latest-extension.json`
-3. Copy those files to `public/downloads/`.
-4. Update `src/i18n/chrome-extension-content.ts` to keep the primary Chrome extension CTA pointed at the Chrome Web Store and the fallback package metadata matched to `latest-extension.json`.
-5. Remove stale older extension zip and checksum files from `public/downloads/`.
-6. Run `pnpm test` and `pnpm run build` in the website project.
-7. Deploy with `pnpm run deploy:cf-workers`.
+4. Copy those files to `public/downloads/`.
+5. Update `src/i18n/chrome-extension-content.ts` to keep the primary Chrome extension CTA pointed at the Chrome Web Store and the fallback package metadata matched to `latest-extension.json`.
+6. Remove stale older extension zip and checksum files from `public/downloads/`.
+7. Run `pnpm test` and `pnpm run build` in the website project.
+8. Deploy with `pnpm run deploy:cf-workers`.
 
 `pnpm run deploy:cf-workers` may finish the Cloudflare deployment successfully and then report a Sentry release finalization error. If Wrangler prints a current version ID and the live site verifies correctly, treat the website deployment as published, then investigate Sentry separately.
 

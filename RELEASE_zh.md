@@ -70,6 +70,14 @@ pnpm release:preflight
 - 将 Chrome 插件包提交到 Chrome Web Store，或确认已审核通过的商店页正在提供目标版本
 - 只有本次涉及 package 对外接口时，才同步发布 sdk/package
 
+## 下游依赖同步
+
+- 先检查下游项目是否存在直接 package 依赖，再决定是否 bump：
+  `rg -n "@pilio/gemini-watermark-remover" --glob package.json --glob pnpm-lock.yaml`
+- 不要把 Pilio 的任务路由、processor key、i18n 文案、测试或文档中出现的 `gemini-watermark-remover` 当成必须升级 npm SDK 的证据。
+- `D:\Project\pilio` 当前走后端 Gemini 去水印处理链路；除非重新引入直接 package 依赖，否则不需要 bump `@pilio/gemini-watermark-remover`。
+- `D:\Project\geminiwatermarkremover.io` 可能仍会为本地浏览器工具直接消费 npm SDK。若本次发布了 npm 包，则更新该站的 `package.json` / `pnpm-lock.yaml`，再重新构建、测试和部署。
+
 GitHub Release 命令示例：
 
 ```bash
@@ -93,15 +101,16 @@ GitHub Release 发布后：
 1. 在官网项目中运行 `pnpm run userscript:build`。
    - 该命令会重新构建当前上游仓库。
    - 然后把 `dist/userscript/gemini-watermark-remover.user.js` 复制到 `public/userscript/gemini-watermark-remover.user.js`。
-2. 从 GitHub Release 下载准确的 Chrome 插件备用资产到官网项目：
+2. 如果本次已经发布 npm SDK，且官网仍直接依赖该 SDK，则把 `@pilio/gemini-watermark-remover` 更新到对应版本并刷新 `pnpm-lock.yaml`。
+3. 从 GitHub Release 下载准确的 Chrome 插件备用资产到官网项目：
    - `gemini-watermark-remover-extension-v<version>.zip`
    - `gemini-watermark-remover-extension-v<version>.zip.sha256.txt`
    - `latest-extension.json`
-3. 将这些文件复制到 `public/downloads/`。
-4. 更新 `src/i18n/chrome-extension-content.ts`，确保 Chrome 插件主 CTA 指向 Chrome Web Store，备用包元数据与 `latest-extension.json` 保持一致。
-5. 从 `public/downloads/` 删除旧版本 zip 和 checksum 文件。
-6. 在官网项目中运行 `pnpm test` 和 `pnpm run build`。
-7. 使用 `pnpm run deploy:cf-workers` 部署官网。
+4. 将这些文件复制到 `public/downloads/`。
+5. 更新 `src/i18n/chrome-extension-content.ts`，确保 Chrome 插件主 CTA 指向 Chrome Web Store，备用包元数据与 `latest-extension.json` 保持一致。
+6. 从 `public/downloads/` 删除旧版本 zip 和 checksum 文件。
+7. 在官网项目中运行 `pnpm test` 和 `pnpm run build`。
+8. 使用 `pnpm run deploy:cf-workers` 部署官网。
 
 `pnpm run deploy:cf-workers` 可能已经成功完成 Cloudflare 部署，但最后报告 Sentry release finalize 错误。如果 Wrangler 打印了当前 version ID，并且线上站点验证通过，应先把官网部署视为已发布，再单独排查 Sentry。
 
