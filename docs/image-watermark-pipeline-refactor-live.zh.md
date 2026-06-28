@@ -3505,7 +3505,7 @@ Phase 5 收尾审阅：
 
 当前线上样本基线：
 
-- 样本集：`D:/Project/sample-files/gemini-watermark/online-sample-2026-06-23-to-2026-06-24-max500`
+- 样本集：`sample-files/gemini-watermark/online-sample-2026-06-23-to-2026-06-24-max500`，本地可用 `GWR_ONLINE_SAMPLE_ROOT` 指向实际下载目录。
 - 报告：`.artifacts/online-sample-2026-06-23-to-2026-06-24-max500/latest-report-after-rebalance.json`
 - 结果：`978/1000 = 97.80%`
 - 相对基线：`newlyPassing=29`，`newlyFailing=0`

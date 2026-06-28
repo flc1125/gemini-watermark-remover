@@ -18,7 +18,8 @@ import {
 import { decodeImageDataInNode } from './sample-benchmark.js';
 
 const DEFAULT_SAMPLE_ROOT = path.resolve(
-    'D:/Project/sample-files/gemini-watermark/online-sample-2026-06-23-to-2026-06-24-max500'
+    process.env.GWR_ONLINE_SAMPLE_ROOT ||
+    'sample-files/gemini-watermark/online-sample-2026-06-23-to-2026-06-24-max500'
 );
 const DEFAULT_REPORT_PATH = path.resolve(
     '.artifacts/online-sample-2026-06-23-to-2026-06-24-max500/latest-report-after-rebalance.json'
