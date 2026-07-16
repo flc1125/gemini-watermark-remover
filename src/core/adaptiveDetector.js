@@ -9,6 +9,11 @@ const DEFAULT_THRESHOLD = 0.35;
 const EPSILON = 1e-8;
 const REFERENCE_WATERMARK_SIZE = 96;
 const MIN_COARSE_ADJUSTED_SCORE = 0.08;
+const UNDERSIZED_SEARCH_MIN_BASE_SIZE = 80;
+const UNDERSIZED_SEARCH_SIZES = [40];
+const UNDERSIZED_MIN_SPATIAL_SCORE = 0.9;
+const UNDERSIZED_MIN_GRADIENT_SCORE = 0.75;
+const UNDERSIZED_MIN_CONFIDENCE_GAIN = 0.12;
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -205,6 +210,67 @@ function getTemplate(cache, alpha96, size) {
     const tpl = { alpha, grad };
     cache.set(size, tpl);
     return tpl;
+}
+
+function findStrongUndersizedCandidate({
+    context,
+    templateCache,
+    alpha96,
+    defaultConfig,
+    baseline,
+    threshold
+}) {
+    if (defaultConfig.logoSize < UNDERSIZED_SEARCH_MIN_BASE_SIZE) return null;
+
+    const { width, height } = context;
+    const marginRange = Math.max(32, Math.round(defaultConfig.logoSize * 0.75));
+    let coarseBest = null;
+
+    for (const size of UNDERSIZED_SEARCH_SIZES) {
+        const tpl = getTemplate(templateCache, alpha96, size);
+        const minMarginRight = clamp(defaultConfig.marginRight - marginRange, 8, width - size - 1);
+        const maxMarginRight = clamp(defaultConfig.marginRight + marginRange, minMarginRight, width - size - 1);
+        const minMarginBottom = clamp(defaultConfig.marginBottom - marginRange, 8, height - size - 1);
+        const maxMarginBottom = clamp(defaultConfig.marginBottom + marginRange, minMarginBottom, height - size - 1);
+
+        for (let mr = minMarginRight; mr <= maxMarginRight; mr += 8) {
+            const x = width - mr - size;
+            for (let mb = minMarginBottom; mb <= maxMarginBottom; mb += 8) {
+                const y = height - mb - size;
+                const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+                if (!score || (coarseBest && score.confidence <= coarseBest.confidence)) continue;
+                coarseBest = { x, y, size, ...score };
+            }
+        }
+    }
+
+    if (!coarseBest) return null;
+
+    let best = coarseBest;
+    for (let size = coarseBest.size - 2; size <= coarseBest.size + 2; size += 2) {
+        const tpl = getTemplate(templateCache, alpha96, size);
+        for (let x = coarseBest.x - 8; x <= coarseBest.x + 8; x += 2) {
+            if (x < 0 || x + size > width) continue;
+            for (let y = coarseBest.y - 8; y <= coarseBest.y + 8; y += 2) {
+                if (y < 0 || y + size > height) continue;
+                const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+                if (score && score.confidence > best.confidence) {
+                    best = { x, y, size, ...score };
+                }
+            }
+        }
+    }
+
+    if (
+        best.confidence < threshold ||
+        best.confidence < baseline.confidence + UNDERSIZED_MIN_CONFIDENCE_GAIN ||
+        best.spatialScore < UNDERSIZED_MIN_SPATIAL_SCORE ||
+        best.gradientScore < UNDERSIZED_MIN_GRADIENT_SCORE
+    ) {
+        return null;
+    }
+
+    return best;
 }
 
 function shiftAlphaMap(alphaMap, size, dx, dy) {
@@ -492,7 +558,20 @@ export function detectAdaptiveWatermarkRegion({
         }
     }
 
+    const undersizedCandidate = findStrongUndersizedCandidate({
+        context,
+        templateCache,
+        alpha96,
+        defaultConfig,
+        baseline: best,
+        threshold
+    });
+    if (undersizedCandidate) {
+        best = undersizedCandidate;
+    }
+
     return {
+        ...(undersizedCandidate ? { strongUndersizedMatch: true } : {}),
         found: best.confidence >= threshold,
         confidence: best.confidence,
         spatialScore: best.spatialScore,

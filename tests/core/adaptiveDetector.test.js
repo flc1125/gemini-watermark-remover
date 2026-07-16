@@ -65,6 +65,21 @@ function createBaseImageData(width, height) {
     return { width, height, data };
 }
 
+function createPaleFlatImageData(width, height) {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const value = 204 + ((x + y) % 3);
+            data[idx] = value;
+            data[idx + 1] = value + 1;
+            data[idx + 2] = value + 3;
+            data[idx + 3] = 255;
+        }
+    }
+    return { width, height, data };
+}
+
 function applyWatermark(imageData, alpha96, box) {
     const { width, data } = imageData;
     const alpha = resizeAlphaNearest(alpha96, 96, box.size);
@@ -139,6 +154,35 @@ test('detectAdaptiveWatermarkRegion should locate non-standard watermark size', 
     assert.ok(Math.abs(result.region.size - target.size) <= 4, `size=${result.region.size}`);
     assert.ok(Math.abs(result.region.x - target.x) <= 6, `x=${result.region.x}`);
     assert.ok(Math.abs(result.region.y - target.y) <= 6, `y=${result.region.y}`);
+    assert.equal(result.strongUndersizedMatch, undefined);
+});
+
+test('detectAdaptiveWatermarkRegion should locate a strong 40px watermark when the default tier is 96px', () => {
+    const alpha96 = createSyntheticAlpha(96);
+    const imageData = createPaleFlatImageData(400, 500);
+    const target = {
+        size: 40,
+        x: 400 - 100 - 40,
+        y: 500 - 60 - 40
+    };
+    applyWatermark(imageData, alpha96, target);
+
+    const result = detectAdaptiveWatermarkRegion({
+        imageData,
+        alpha96,
+        defaultConfig: {
+            logoSize: 96,
+            marginRight: 64,
+            marginBottom: 64
+        },
+        threshold: 0.35
+    });
+
+    assert.equal(result.found, true);
+    assert.ok(Math.abs(result.region.size - target.size) <= 4, `size=${result.region.size}`);
+    assert.ok(Math.abs(result.region.x - target.x) <= 6, `x=${result.region.x}`);
+    assert.ok(Math.abs(result.region.y - target.y) <= 6, `y=${result.region.y}`);
+    assert.equal(result.strongUndersizedMatch, true);
 });
 
 test('detectAdaptiveWatermarkRegion should not report confident match on clean image', () => {
